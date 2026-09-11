@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap');
+
+* { font-family: 'Tajawal', system-ui, sans-serif; }
+
+html { scroll-behavior: smooth; }
+
+body { background-color: #020617; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+.spinner {
+  border: 3px solid #334155;
+  border-top-color: #f59e0b;
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* بطاقة عامة موحّدة لكل الصفحات */
+.card { background-color: rgba(15, 23, 42, .7); border: 1px solid #1e293b; border-radius: 1rem; }

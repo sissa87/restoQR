@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>securite</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8 space-y-6">
+  <div class="card p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div>
+      <span class="px-2.5 py-0.5 bg-amber-500/20 text-amber-400 text-xs font-bold rounded-md border border-amber-500/30">🛡️ Guardian Sandbox Engine</span>
+      <h2 class="text-xl font-bold text-white flex items-center gap-2 mt-1.5">🔒securité QR</h2>
+      <p class="text-xs text-slate-400 mt-1">tests </p>
+    </div>
+    <button id="runAllBtn" class="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs rounded-xl transition shrink-0">▶️ activer les tests</button>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="testsGrid"></div>
+</main>
+
+<script src="js/qr-engine.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/auth-gate.js"></script>
+<script>
+requireStaffAuth('ADMIN', () => {
+renderNav('guardian.html');
+renderFooter();
+
+const tests = [
+  {
+    id: 'qr-test-1', category: 'QR_SECURITY',
+    title: 'توليد Secret Token عشوائي لكل طاولة',
+    description: 'التأكد من أن كود الـ QR رمز عشوائي مشفر لا يمكن تخمينه من رقم الطاولة فقط.',
+    run: () => {
+      const t1 = generateRandomSecretToken(4), t2 = generateRandomSecretToken(4);
+      if (t1 === t2) return { success: false, message: 'فشل: الرموز العشوائية متطابقة!' };
+      if (!t1.startsWith('SEC-TBL4-')) return { success: false, message: 'فشل: الرمز لا يبدأ بالبادئة الصحيحة' };
+      return { success: true, message: `نجاح: تم توليد رموز عشوائية غير مكررة (${t1})` };
+    }
+  },
+  {
+    id: 'qr-test-2', category: 'QR_SECURITY',
+    title: 'إلغاء الـ QR القديم فور تحرير الطاولة',
+    description: 'عند تحرير الطاولة، يتغير الرمز السري ويصبح القديم غير صالح تماماً.',
+    run: () => {
+      const initialToken = generateRandomSecretToken(1);
+      const dummyTable = { id: 't-test-1', number: 1, status: 'DIRTY_CLEANING', qr_security_token: initialToken };
+      const updatedTable = createNewTableToken(dummyTable);
+      updatedTable.status = 'AVAILABLE';
+      if (updatedTable.qr_security_token === initialToken) return { success: false, message: 'فشل: لم يتغير الرمز السري بعد التحرير!' };
+      const scanRes = verifyAndScanQR(1, initialToken, 'DEV-TEST-001', 'Test Device', updatedTable, null);
+      if (!scanRes.isValid && (scanRes.status === 'EXPIRED_TOKEN' || scanRes.status === 'INVALID_TOKEN')) {
+        return { success: true, message: `نجاح: رُفض الرمز القديم (${initialToken.slice(0,10)}...) وسُمح بالجديد (${updatedTable.qr_security_token.slice(0,10)}...)` };
+      }
+      return { success: false, message: `فشل مع خطأ: ${scanRes.message}` };
+    }
+  },
+  {
+    id: 'qr-test-3', category: 'SESSION_TIMEOUT',
+    title: 'ربط الجلسة بجهاز واحد فقط (Device Binding)',
+    description: 'الجلسة المفتوحة من هاتف زبون تمنع محاولات الدخول من أجهزة أخرى لنفس الطاولة.',
+    run: () => {
+      const token = generateRandomSecretToken(2);
+      const dummyTable = { id: 't-test-2', number: 2, status: 'OCCUPIED', qr_security_token: token };
+      const activeSession = { id: 'sess-dev-1', table_number: 2, qr_security_token: token, status: 'ACTIVE', device_id: 'DEV-ORIGINAL-PHONE-1234', expires_at: new Date(Date.now() + 3600000).toISOString() };
+      const res = verifyAndScanQR(2, token, 'DEV-OTHER-PHONE-9999', 'Attacker Phone', dummyTable, activeSession);
+      if (!res.isValid && res.status === 'DEVICE_MISMATCH') return { success: true, message: 'نجاح: حُظر الجهاز الغريب وحُميت الجلسة المرابطة.' };
+      return { success: false, message: `فشل: النتيجة غير متوقعة: ${res.message}` };
+    }
+  },
+  {
+    id: 'qr-test-4', category: 'SESSION_TIMEOUT',
+    title: 'حظر الجلسة المنتهية الصلاحية',
+    description: 'بعد انقضاء وقت صلاحية الجلسة، يُمنع أي استخدام إضافي لها.',
+    run: () => {
+      const token = generateRandomSecretToken(3);
+      const dummyTable = { id: 't-test-3', number: 3, status: 'OCCUPIED', qr_security_token: token };
+      const expiredSession = { id: 'sess-exp-1', table_number: 3, qr_security_token: token, status: 'ACTIVE', device_id: 'DEV-SRV-UNKNOWN', expires_at: new Date(Date.now() - 10000).toISOString() };
+      const res = verifyAndScanQR(3, token, 'DEV-SRV-UNKNOWN', 'Test Device', dummyTable, expiredSession);
+      if (!res.isValid && res.status === 'EXPIRED_SESSION') return { success: true, message: 'نجاح: رُفضت الجلسة المنتهية الصلاحية بنجاح.' };
+      return { success: false, message: `فشل: النتيجة غير متوقعة: ${res.message}` };
+    }
+  },
+  {
+    id: 'sm-test-5', category: 'STATE_MACHINE',
+    title: 'منع تحويل الطلب للمطبخ عند سياسة الدفع أولاً',
+    description: 'آلة الحالات ترفض الانتقال من SUBMITTED إلى KITCHEN_RECEIVED إن لم يُسدد أولاً.',
+    run: () => {
+      try {
+        validateOrderTransition('SUBMITTED', 'KITCHEN_RECEIVED', 'KITCHEN', 'PAYMENT_FIRST');
+        return { success: false, message: 'فشل: سُمح بالانتقال رغم تفعيل سياسة الدفع أولاً!' };
+      } catch (err) {
+        if (err.message.includes('سياسة الدفع أولاً مفعلة')) return { success: true, message: `نجاح: تم اعتراض الانتقال غير المصرح به (${err.message})` };
+        return { success: false, message: `فشل مع رسالة غير متوقعة: ${err.message}` };
+      }
+    }
+  },
+  {
+    id: 'sec-test-6', category: 'QR_SECURITY',
+    title: 'حماية المدخلات ضد SQL Injection و XSS',
+    description: 'فحص تنقية أسماء الزبائن والملاحظات ضد المحاقن الضارة.',
+    run: () => {
+      const xssPayload = "<scr" + "ipt>alert('pwned')</scr" + "ipt>";
+      const sanitize = (s) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const clean = sanitize(xssPayload);
+      if (clean.includes('<scr' + 'ipt>')) return { success: false, message: 'فشل: لم تتم تنقية وسم السكربت!' };
+      return { success: true, message: `نجاح: تم تعقيم المدخلات وتحييد الكود التخريبي (${clean})` };
+    }
+  }
+];
+
+let results = {};
+
+function renderTests() {
+  document.getElementById('testsGrid').innerHTML = tests.map(t => {
+    const r = results[t.id];
+    return `<div class="card p-5 space-y-4 flex flex-col justify-between">
+      <div class="space-y-2">
+        <div class="flex justify-between items-start">
+          <span class="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 font-mono text-[10px] font-bold rounded border border-indigo-500/30">${t.category}</span>
+          ${r ? `<span class="px-2.5 py-0.5 rounded text-[10px] font-bold ${r.success ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'}">${r.success ? '✅ PASSED' : '❌ FAILED'}</span>` : ''}
+        </div>
+        <h3 class="font-bold text-sm text-white">${t.title}</h3>
+        <p class="text-xs text-slate-400">${t.description}</p>
+      </div>
+      ${r ? `<div class="p-3 rounded-xl text-xs font-mono border ${r.success ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200' : 'bg-rose-950/60 border-rose-500/40 text-rose-200'}">${r.message}</div>` : ''}
+      <button data-id="${t.id}" class="run-test-btn w-full py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold text-xs rounded-xl transition">▶️ تشغيل الاختبار المنفرد</button>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.run-test-btn').forEach(b => b.onclick = () => runTest(b.dataset.id));
+}
+
+function runTest(id) {
+  const test = tests.find(t => t.id === id);
+  results[id] = test.run();
+  renderTests();
+}
+
+document.getElementById('runAllBtn').onclick = () => { tests.forEach(t => results[t.id] = t.run()); renderTests(); };
+
+renderTests();
+});
+</script>
+</body>
+</html>

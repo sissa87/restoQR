@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>restaurant</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8 space-y-6">
+
+  <div class="card p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div>
+      <span class="px-2.5 py-0.5 bg-amber-500/20 text-amber-400 text-xs font-bold rounded-md border border-amber-500/30">النادل</span>
+      <h2 class="text-xl font-bold text-white flex items-center gap-2 mt-1.5">👥 مراقبة الأماكن المحجوزة والمحررة فقط</h2>
+      <p class="text-xs text-slate-400 mt-1">وظيفة المراقب: حالة الطاولات (محجوزة / قيد التنظيف / جاهزة)، تعيين الزبائن للقاعة، وتأشير التسليم - لا علاقة له بجودة الطعام</p>
+    </div>
+    <div class="flex items-center gap-2 bg-slate-950 p-2 rounded-2xl border border-slate-800">
+      <label class="text-xs text-slate-400 font-bold">قاعتي:</label>
+      <select id="hallSelect" class="bg-slate-900 border border-slate-700 text-amber-400 font-bold text-xs rounded-xl px-3 py-1.5"></select>
+    </div>
+  </div>
+
+  <!-- كل الطلبات النشطة في النظام - بحث وتعديل مباشر -->
+  <div class="card p-5 space-y-3">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3 flex items-center justify-between">
+      <span>📑 كل الطلبات النشطة في النظام (<span id="allOrdersCount">0</span>)</span>
+      <input id="allOrdersSearch" placeholder="بحث برقم الطلب أو الطاولة..." class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-[11px] text-white w-48">
+    </h3>
+    <div id="allOrdersList" class="space-y-2 max-h-80 overflow-y-auto"></div>
+  </div>
+
+  <!-- الطلبات السابقة (الملبّاة/المكتملة أو الملغاة) - تتحرر الطاولة وينتقل طلبها هنا؛ يمكن للمراقب فتحه وتعديله أو حذفه -->
+  <div class="card p-5 space-y-3">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">📜 الطلبات السابقة (الملبّاة اليوم) (<span id="pastOrdersCount">0</span>)</h3>
+    <div id="pastOrdersList" class="space-y-2 max-h-64 overflow-y-auto"></div>
+    <div id="pastOrderDetails" class="border-t border-slate-800 pt-4" style="display:none"></div>
+  </div>
+
+  <!-- البحث عن تذكرة وتعيينها لهذه القاعة -->
+  <div class="card p-5 space-y-3">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">🔎 أو ابحث عن تذكرة برقمها مباشرة</h3>
+    <div class="flex gap-2">
+      <input id="ticketLookupInput" type="number" placeholder="أدخل الرقم التعريفي..." class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+      <button id="ticketLookupBtn" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-xl transition">بحث</button>
+    </div>
+    <div id="ticketLookupResult"></div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <div class="lg:col-span-7 card p-5 space-y-4">
+      <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">🪑 طاولات القاعة الحالية</h3>
+      <div id="tablesGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+      <div id="tableOrderDetails" class="border-t border-slate-800 pt-4" style="display:none"></div>
+    </div>
+
+    <div class="lg:col-span-5 space-y-6">
+      <!-- 🆕 لا يوجد "طابور انتظار" بعد الآن (الزبون يفتح جلسته مباشرة عبر QR/الكود اليدوي/شاشة
+           التسجيل، والتسكين فوري) - بدلاً منه: قائمة جانبية واحدة بكل الطلبات التي لم تُسلَّم
+           بعد (سواء في المطبخ أو جاهزة)، كل طلب يظهر بطاولته مباشرة. -->
+      <div class="card p-5 space-y-3">
+        <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3 flex items-center justify-between">
+          <span>📋 طلبات لم تُسلَّم بعد (<span id="undeliveredCount">0</span>)</span>
+        </h3>
+        <div id="undeliveredList" class="space-y-2 max-h-[32rem] overflow-y-auto"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/qr-engine.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/auth-gate.js"></script>
+<script>
+requireStaffAuth('MONITOR', () => {
+renderNav('monitor.html');
+renderFooter();
+
+let tables = [], tickets = [], orders = [], halls = [], selectedHall = 'h1', settings = null;
+
+document.getElementById('hallSelect').onchange = (e) => { selectedHall = e.target.value; render(); };
+
+// ✅ إصلاح: بعد 8migration_v7_critical_rls_fix.sql أصبح queue_tickets.hall_preference
+// يخزّن معرّف القاعة الحقيقي (hall_id) مباشرة بدل قيمتي MAIN/FAMILIES القديمتين.
+// الدالة القديمة كانت تُرجع null لأي قاعة غير h1/h2 فتكسر الإسناد كلياً لأي قاعة جديدة.
+function hallPrefFor(hallId) { return hallId; }
+function hallLabel(hallId) { const h = halls.find(x => x.id === hallId); return h ? h.name : (hallId === 'h1' ? 'القاعة1' : 'القاعة 2'); }
+
+// ---------------- 🗑️ أُزيلت "الطلبات المدفوعة غير المسندة لقاعة" - هذا البناء ثابت على نمط
+// "الطلب من الطاولة" فقط (لا يوجد طابور/تذاكر انتظار تُنشأ أصلاً بحالة WAITING)، فكانت هذه
+// الحالة تظهر فارغة دائماً بلا داعٍ. أبقيت البحث عن تذكرة برقمها (ticketLookup) لأنه لا يزال
+// يخدم حالات الحجز العائلي (reservations.html) عبر tables مباشرة دون الحاجة لهذه القائمة. ----------------
+
+// ---------------- بحث عن تذكرة وتعيينها للقاعة ----------------
+document.getElementById('ticketLookupBtn').onclick = async () => {
+  const num = +document.getElementById('ticketLookupInput').value;
+  const resBox = document.getElementById('ticketLookupResult');
+  if (!num) return;
+  const { data: t } = await supabaseClient.from('queue_tickets').select('*').eq('ticket_number', num).order('created_at', { ascending: false }).limit(1).single();
+  if (!t) { resBox.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">لا توجد تذكرة بهذا الرقم</div>`; return; }
+
+  if (t.status === 'SEATED') { resBox.innerHTML = `<div class="p-3 bg-slate-800 rounded-xl text-slate-300 text-xs">هذه التذكرة مُسكَّنة مسبقاً بطاولة #${t.assigned_table_number}</div>`; return; }
+  if (t.status !== 'WAITING' && t.status !== 'CONFIRMED_ARRIVED') { resBox.innerHTML = `<div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs">حالة التذكرة الحالية: ${t.status} - لا يمكن تعيينها الآن</div>`; return; }
+
+  const { data: order } = t.associated_order_id ? await supabaseClient.from('orders').select('*').eq('id', t.associated_order_id).single() : { data: null };
+  const isPaid = order && order.payment_status === 'PAID';
+  const requiresPaymentFirst = order && (order.payment_policy === 'PAYMENT_FIRST' || order.payment_policy === 'SIMULTANEOUS');
+  const canAssign = order && (!requiresPaymentFirst || isPaid);
+
+  resBox.innerHTML = `
+    <div class="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+      <div class="flex justify-between items-center text-xs">
+        <span class="font-bold text-white">#${t.ticket_number} - ${t.customer_name}</span>
+        <span class="px-2 py-0.5 rounded font-bold ${isPaid ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${isPaid ? '✅ مدفوع' : '⚠️ لم يُدفع بعد'}</span>
+      </div>
+      ${!canAssign ? `<div class="text-[11px] text-rose-300">سياسة "الدفع أولاً" مفعّلة لهذا الطلب - لا يمكن تعيينه لقاعة قبل تأكيد الدفع لدى القابض</div>` :
+        `<button id="assignHallBtn" class="w-full py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg transition">📍 تعيين لقاعة "${hallLabel(selectedHall)}"</button>`}
+    </div>`;
+
+  const assignBtn = document.getElementById('assignHallBtn');
+  if (assignBtn) assignBtn.onclick = () => assignTicketToHall(t);
+};
+
+async function assignTicketToHall(ticket) {
+  try { validateQueueTransition(ticket.status, 'CONFIRMED_ARRIVED'); } catch (err) { showToast(err.message, 'error'); return; }
+  const res = await updateRow('queue_tickets', 'id', ticket.id, { status: 'CONFIRMED_ARRIVED', hall_preference: hallPrefFor(selectedHall), priority_boost: 0 });
+  if (!res || !res.length) { showToast('⚠️ فشل الإسناد — نفّذ ملف sql/8migration_v7_queue_fix.sql في قاعدة البيانات', 'error'); return; }
+  await addAuditLog('QUEUE_HALL_ASSIGNED', 'MONITOR', `تعيين تذكرة #${ticket.ticket_number} لقاعة ${hallLabel(selectedHall)}`);
+
+  document.getElementById('ticketLookupInput').value = '';
+  document.getElementById('ticketLookupResult').innerHTML = '';
+
+  // 🆕 لا يوجد "طابور انتظار" مرئي بعد الآن: التسكين فوري إن وُجدت طاولة فارغة في القاعة،
+  // وإلا يبقى الزبون بحالة "CONFIRMED_ARRIVED" داخلياً ليُسكَّن تلقائياً أول ما تتحرر طاولة (انظر changeTableStatus).
+  const freeTable = tables.filter(t => t.hall_id === selectedHall && t.status === 'AVAILABLE').sort((a, b) => a.number - b.number)[0];
+  if (freeTable) {
+    await autoSeatTicket({ ...ticket, status: 'CONFIRMED_ARRIVED' }, freeTable);
+  } else {
+    showToast(`تم تعيين الزبون لقاعة "${hallLabel(selectedHall)}" — سيُسكَّن تلقائياً فور توفر طاولة`, 'success');
+  }
+  loadAll();
+}
+
+// ---------------- تسكين تلقائي فوري (بدون خطوة "نداء" وسيطة ولا طابور مرئي) ----------------
+async function autoSeatTicket(ticket, table) {
+  try { validateQueueTransition(ticket.status, 'SEATED'); } catch (err) { showToast(err.message, 'error'); return; }
+  await updateRow('queue_tickets', 'id', ticket.id, { status: 'SEATED', assigned_table_number: table.number });
+  try { validateTableTransition('AVAILABLE', 'OCCUPIED'); await updateRow('tables', 'id', table.id, { status: 'OCCUPIED' }); } catch (e) {}
+
+  if (ticket.associated_order_id) {
+    const { data: linkedOrder } = await supabaseClient.from('orders').select('*').eq('id', ticket.associated_order_id).single();
+    if (linkedOrder) {
+      const requiresPaymentFirst = linkedOrder.payment_policy === 'PAYMENT_FIRST' || linkedOrder.payment_policy === 'SIMULTANEOUS';
+      const readyForKitchen = requiresPaymentFirst
+        ? (linkedOrder.payment_status === 'PAID' && linkedOrder.status === 'PAID')
+        : (linkedOrder.status === 'SUBMITTED'); // سياسة "التحضير أولاً": يُرسل للمطبخ فوراً بدون انتظار الدفع
+      if (readyForKitchen) {
+        try {
+          validateOrderTransition(linkedOrder.status, 'IN_PREPARATION', 'MONITOR', linkedOrder.payment_policy);
+          await updateRow('orders', 'id', linkedOrder.id, { table_number: table.number, hall_name: table.hall_name, status: 'IN_PREPARATION', items: (linkedOrder.items || []).map(i => ({ ...i, kitchenStatus: 'PREPARING' })), updated_at: new Date().toISOString() });
+          await addNotification('طلب جديد من الطابور 🔥', `طلب #${linkedOrder.order_number} - طاولة #${table.number}`, 'KITCHEN', 'HIGH');
+        } catch (err) { showToast(err.message, 'error'); }
+      } else {
+        // لم يُدفع بعد وسياسته تشترط الدفع أولاً: تُربط الطاولة بالطلب فقط بانتظار تأكيد القابض للدفع
+        await updateRow('orders', 'id', linkedOrder.id, { table_number: table.number, hall_name: table.hall_name, updated_at: new Date().toISOString() });
+      }
+    }
+  }
+  await addAuditLog('QUEUE_AUTO_SEATED', 'MONITOR', `تسكين تلقائي لتذكرة #${ticket.ticket_number} بطاولة #${table.number} فور تجهيزها`);
+  showToast(`تم تسكين التذكرة #${ticket.ticket_number} تلقائياً بالطاولة #${table.number} وإرسال طلبه للمطبخ`, 'success');
+}
+
+// ترتيب: العائدون (priority_boost) أولاً ثم الأقدم - يُستخدم فقط لاختيار التذكرة التالية للتسكين التلقائي عند تحرير طاولة
+function sortQueue(list) {
+  return list.sort((a, b) => (b.priority_boost || 0) - (a.priority_boost || 0) || new Date(a.created_at) - new Date(b.created_at));
+}
+
+function hallWaitingTickets(hallId) {
+  return sortQueue(tickets.filter(t => t.status === 'CONFIRMED_ARRIVED' && t.hall_preference === hallPrefFor(hallId)));
+}
+
+// تخطي: يُخرج التذكرة نهائياً (لا وجود لقائمة "عالقين" مرئية بعد الآن)
+async function skipTicket(ticket) {
+  try { validateQueueTransition(ticket.status, 'SKIPPED'); } catch (err) { showToast(err.message, 'error'); return; }
+  await updateRow('queue_tickets', 'id', ticket.id, {
+    status: 'SKIPPED', skipped_count: (ticket.skipped_count || 0) + 1, assigned_table_number: null
+  });
+  if (ticket.assigned_table_number) {
+    const tb = tables.find(t => t.number === ticket.assigned_table_number);
+    if (tb && tb.status === 'RESERVED') await updateRow('tables', 'id', tb.id, { status: 'AVAILABLE' });
+  }
+  await addAuditLog('QUEUE_SKIPPED', 'MONITOR', `تخطي التذكرة #${ticket.ticket_number}`);
+  showToast(`تم تخطي التذكرة #${ticket.ticket_number}`, 'info');
+  loadAll();
+}
+
+// ---------------- تأشير "تم التسليم للزبون" (وليس المطبخ) ----------------
+async function markDelivered(order) {
+  try { validateOrderTransition('READY_FOR_DELIVERY', 'DELIVERED_TO_TABLE', 'MONITOR'); } catch (err) { showToast(err.message, 'error'); return; }
+  await updateRow('orders', 'id', order.id, { status: 'DELIVERED_TO_TABLE', updated_at: new Date().toISOString() });
+  await addAuditLog('ORDER_DELIVERED', 'MONITOR', `تأشير تسليم الطلب #${order.order_number} للزبون على الطاولة #${order.table_number}`);
+  showToast(`تم تأكيد تسليم الطلب #${order.order_number} للزبون`, 'success');
+  loadAll();
+}
+
+// ---------------- العرض ----------------
+const TABLE_COLORS = {
+  AVAILABLE: 'bg-emerald-500/20 border-emerald-500 text-emerald-300',
+  OCCUPIED: 'bg-rose-500/20 border-rose-500 text-rose-300',
+  PAYMENT_PENDING: 'bg-amber-500/20 border-amber-500 text-amber-300',
+  RESERVED: 'bg-indigo-500/20 border-indigo-500 text-indigo-300',
+  DIRTY_CLEANING: 'bg-blue-500/20 border-blue-500 text-blue-300',
+  BLOCKED_MAINTENANCE: 'bg-slate-800 border-slate-700 text-slate-500'
+};
+const TABLE_LABELS = {
+  AVAILABLE: 'جاهزة', OCCUPIED: 'مشغولة', PAYMENT_PENDING: 'بانتظار المحاسبة',
+  RESERVED: 'محجوزة', DIRTY_CLEANING: 'قيد التنظيف', BLOCKED_MAINTENANCE: 'معطلة'
+};
+
+// ---------------- تغيير حالة الطاولة يدوياً من طرف المراقب (حسب الانتقالات المسموحة فقط) ----------------
+async function changeTableStatus(table, newStatus) {
+  try { validateTableTransition(table.status, newStatus); } catch (err) { showToast(err.message, 'error'); return; }
+
+  if (newStatus === 'AVAILABLE') {
+    const lingering = orders.filter(o => o.table_number === table.number && !['COMPLETED','CANCELLED'].includes(o.status));
+    if (lingering.length) {
+      showToast(`⚠️ لا يمكن تحرير الطاولة #${table.number} - يوجد ${lingering.length} طلب لم يُغلق بعد. اضغط على الطاولة، ثم زر "🔒 إغلاق الطلب وتحرير الطاولة" إن كان الطلب منتهياً فعلاً`, 'error');
+      showTableOrderDetails(table.id);
+      return;
+    }
+  }
+
+  const patch = { status: newStatus };
+  if (newStatus === 'AVAILABLE') {
+    // لا نُجدّد رمز QR هنا عمداً - يبقى ثابتاً ليصلح للطباعة الدائمة على الطاولة.
+    // الحماية الفعلية: الجلسة لا تُفتح إلا إن كانت الطاولة "فارغة" فعلاً (migration_v11) + GPS/واي فاي.
+    Object.assign(patch, { current_order_id: null, current_session_id: null });
+    // 🆕 إنهاء أي جلسة (table_sessions) عالقة لهذه الطاولة صراحة - بدون هذا، تبقى الجلسة القديمة "ACTIVE"
+    // في قاعدة البيانات حتى لو أصبحت الطاولة نفسها "AVAILABLE"، فترفض دوال الدخول (QR/الكود اليدوي)
+    // أي زبون جديد ظناً منها أن الطاولة ما زالت مشغولة بجلسة سابقة - وهذا سبب شكوى "لا أتمكن من الولوج
+    // رغم إدخال الكود" حتى بعد أن يحرّرها المراقب يدوياً.
+    await supabaseClient.from('table_sessions').update({ status: 'EXPIRED', ended_at: new Date().toISOString() })
+      .eq('table_number', table.number).eq('status', 'ACTIVE');
+  }
+  await updateRow('tables', 'id', table.id, patch);
+  await addAuditLog('TABLE_STATUS_CHANGED', 'MONITOR', `تغيير حالة الطاولة #${table.number} من ${table.status} إلى ${newStatus}`);
+  showToast(`تم تغيير حالة الطاولة #${table.number} إلى "${TABLE_LABELS[newStatus]}"`, 'success');
+
+  // 🆕 عند تحرير الطاولة: تسكين تلقائي فوري لأقدم زبون بانتظار طاولة في هذه القاعة (لا "نداء" وسيط، لا طابور مرئي)
+  if (newStatus === 'AVAILABLE') {
+    const waiting = hallWaitingTickets(table.hall_id);
+    if (waiting.length) await autoSeatTicket(waiting[0], { ...table, status: 'AVAILABLE' });
+  }
+
+  loadAll();
+}
+
+// ---------------- 🆕 إغلاق قسري لطلب/طلبات عالقة على طاولة + تحرير الطاولة مباشرة إلى "جاهزة" ----------------
+// يُستخدم عندما يرفض النظام تحرير الطاولة بسبب طلب لم يُغلق (لم يمرّ بالكاشير)، والمراقب متأكد أن
+// الطلب انتهى فعلياً (دُفع خارج النظام، أو الزبون غادر). يُغلق الطلب كـ"ملغى" (لا يُسجَّل كمدفوع تلقائياً)
+// ثم يحرر الطاولة فوراً، تماماً كأي إجراء آخر يقوم به المراقب مباشرة.
+async function finishOrderAndFreeTable(table) {
+  const lingering = orders.filter(o => o.table_number === table.number && !['COMPLETED','CANCELLED'].includes(o.status));
+  if (!lingering.length) { showToast('لا يوجد طلب مفتوح على هذه الطاولة حالياً', 'error'); return; }
+
+  const list = lingering.map(o => `#${o.order_number} (${ORDER_STATUS_LABELS[o.status] || o.status})`).join('، ');
+  if (!confirm(`إنهاء طلب طاولة #${table.number} وتحريرها؟\n${list}\n\nسيُسجَّل الطلب "مكتملاً" في سجل الطلبات، وتصبح الطاولة "جاهزة" فوراً لاستقبال زبون جديد.\n\nتأكد أن الحساب قد سُوّي مع الزبون قبل المتابعة. هل تريد الإتمام؟`)) return;
+
+  for (const o of lingering) {
+    await updateRow('orders', 'id', o.id, { status: 'COMPLETED', updated_at: new Date().toISOString() });
+    await addAuditLog('ORDER_FINISHED_BY_MONITOR', 'MONITOR', `إنهاء طلب #${o.order_number} على طاولة #${table.number} من طرف المراقب - كان بحالة ${o.status}`);
+  }
+
+  await supabaseClient.from('table_sessions').update({ status: 'EXPIRED', ended_at: new Date().toISOString() })
+    .eq('table_number', table.number).eq('status', 'ACTIVE');
+  await updateRow('tables', 'id', table.id, { status: 'AVAILABLE', current_order_id: null, current_session_id: null });
+  await addAuditLog('TABLE_STATUS_CHANGED', 'MONITOR', `تحرير طاولة #${table.number} إلى "جاهزة" بعد إنهاء الطلب`);
+  showToast(`تم إنهاء الطلب وتحرير طاولة #${table.number} ✅`, 'success');
+  document.getElementById('tableOrderDetails').style.display = 'none';
+
+  const waiting = hallWaitingTickets(table.hall_id);
+  if (waiting.length) await autoSeatTicket(waiting[0], { ...table, status: 'AVAILABLE' });
+
+  loadAll();
+}
+
+async function manageTableCode(tableId, tableNumber) {
+  const table = tables.find(t => t.id === tableId);
+  const choice = prompt(
+    `الكود اليدوي الحالي لطاولة #${tableNumber}:\n${table.manual_code || '—'}\n\nلتحديد كود يدوي جديد اكتبه هنا، أو اترك الحقل فارغاً واضغط إلغاء للاحتفاظ بالكود الحالي:`
+  );
+  if (choice === null || !choice.trim()) return;
+  await updateRow('tables', 'id', tableId, { manual_code: choice.trim() });
+  await addAuditLog('TABLE_CODE_SET', 'MONITOR', `تحديد كود يدوي جديد لطاولة #${tableNumber}`);
+  showToast(`تم تحديث الكود اليدوي لطاولة #${tableNumber}`, 'success');
+  loadAll();
+}
+
+// ---------------- إصلاح "طاولات لا يمكن الولوج إليها": إعادة ضبط قسري ----------------
+// لطاولة عالقة بحالة غير AVAILABLE دون سبب حقيقي (جلسة منتهية لم تُنظَّف، خطأ بشري...)
+// فتُصبح مقفلة تماماً أمام الزبون (QR/الكود اليدوي) وأمام الموظف (شاشة التسجيل) معاً.
+// هذا الإجراء لا يمس أي طلب قائم للطاولة إطلاقاً - يبقى ظاهراً في "كل الطلبات النشطة" للمتابعة العادية.
+async function forceResetTable(tableNumber) {
+  const reason = prompt(`إعادة ضبط قسري للطاولة #${tableNumber} - ستعود فوراً إلى "جاهزة" ويُجدَّد رمز QR الخاص بها.\nملاحظة: أي طلب قديم غير مغلق لهذه الطاولة يبقى كما هو ويظهر في "كل الطلبات النشطة" أعلاه.\nاكتب سبباً موجزاً للمتابعة:`);
+  if (reason === null || !reason.trim()) return;
+  const { data, error } = await supabaseClient.rpc('force_reset_table_secure', { p_table_number: tableNumber, p_reason: reason.trim() });
+  if (error || !data || !data.isValid) { showToast(friendlyRpcError(error) || (data && data.message) || 'تعذر إعادة ضبط الطاولة', 'error'); return; }
+  showToast(data.message, 'success');
+  loadAll();
+}
+
+// 🆕 دورة حياة الطلب مبسّطة الآن إلى 4 أوضاع فقط: بانتظار الدفع/تم الدفع ← تسليم
+// للمطبخ (يدمج الاستلام + التحضير في خطوة واحدة) ← جاهز ← تم التسليم.
+const ORDER_STATUS_LABELS = {
+  SUBMITTED: 'بانتظار الدفع', PAID: 'تم الدفع', KITCHEN_RECEIVED: 'قيد التحضير في المطبخ', IN_PREPARATION: 'قيد التحضير في المطبخ',
+  READY_FOR_DELIVERY: 'جاهز - بانتظار التسليم', DELIVERED_TO_TABLE: 'تم التسليم', PAYMENT_PENDING: 'بانتظار المحاسبة'
+};
+
+// المرحلة التالية التي يمكن للمراقب تأشيرها من نفس لوحة تفاصيل الطاولة (دمج المطبخ في المراقب)
+// SUBMITTED/PAID ← تسليم للمطبخ (خطوة واحدة تدمج الاستلام والتحضير) ← جاهز ← تم التسليم
+const NEXT_KITCHEN_STAGE = {
+  SUBMITTED: { next: 'IN_PREPARATION', label: '🍳 تسليم للمطبخ' },
+  PAID: { next: 'IN_PREPARATION', label: '🍳 تسليم للمطبخ' },
+  KITCHEN_RECEIVED: { next: 'IN_PREPARATION', label: '🔥 بدء التحضير' }, // توافق مع طلب قديم عالق بهذه الحالة تحديداً
+  IN_PREPARATION: { next: 'READY_FOR_DELIVERY', label: '✅ الطلب جاهز' }
+};
+
+function showTableOrderDetails(tableId) {
+  const table = tables.find(t => t.id === tableId);
+  const tableOrders = orders.filter(o => o.table_number === table.number && !['COMPLETED','CANCELLED'].includes(o.status));
+  const box = document.getElementById('tableOrderDetails');
+  if (!tableOrders.length) { box.style.display = 'none'; return; }
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="flex justify-between items-center mb-2">
+      <h4 class="font-bold text-sm text-white">📋 طلبات طاولة #${table.number} (${tableOrders.length})</h4>
+      <button id="closeDetailsBtn" class="text-slate-500 hover:text-white text-xs">✕ إغلاق</button>
+    </div>
+    <div class="space-y-3">
+      ${tableOrders.map(order => {
+        const stage = NEXT_KITCHEN_STAGE[order.status];
+        return `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2 text-xs">
+          <div class="flex justify-between items-center">
+            <span class="font-bold text-white">طلب #${order.order_number}</span>
+            <span class="px-2 py-0.5 rounded font-bold bg-amber-500/20 text-amber-300">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
+            <span class="text-slate-400">${order.payment_status === 'PAID' ? '✅ مدفوع' : '⚠️ غير مدفوع'}</span>
+          </div>
+          <div class="space-y-1.5 pt-2 border-t border-slate-900">
+            ${order.items.map(i => `<div class="flex justify-between text-slate-300"><span>${i.quantity}x ${i.name}</span><span class="text-[10px] px-1.5 py-0.5 bg-slate-800 rounded">${i.kitchenStatus || '—'}</span></div>`).join('')}
+          </div>
+          ${stage ? `<button data-order-id="${order.id}" data-next="${stage.next}" class="details-stage-btn w-full py-2 mt-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg">${stage.label}</button>` : ''}
+          ${order.status === 'READY_FOR_DELIVERY' ? `<button data-order-id="${order.id}" class="details-deliver-btn w-full py-2 mt-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg">✅ تم التسليم للزبون</button>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+    <button id="finishOrderBtn" data-table="${table.id}" class="w-full py-2.5 mt-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg">✅ انتهى الزبون - إتمام الطلب وتحرير الطاولة</button>`;
+
+  document.getElementById('closeDetailsBtn').onclick = () => { box.style.display = 'none'; };
+  box.querySelectorAll('.details-stage-btn').forEach(b => b.onclick = () => advanceKitchenStage(orders.find(o => o.id === b.dataset.orderId), b.dataset.next));
+  box.querySelectorAll('.details-deliver-btn').forEach(b => b.onclick = () => markDelivered(orders.find(o => o.id === b.dataset.orderId)));
+  const finishBtn = document.getElementById('finishOrderBtn');
+  if (finishBtn) finishBtn.onclick = () => finishOrderAndFreeTable(table);
+}
+
+// ---------------- تأشير مرحلة التحضير التالية (استلام/تحضير/جاهز) من المراقب مباشرة ----------------
+async function advanceKitchenStage(order, nextStatus) {
+  try { validateOrderTransition(order.status, nextStatus, 'MONITOR', order.payment_policy); } catch (err) { showToast(err.message, 'error'); return; }
+  const patch = { status: nextStatus, updated_at: new Date().toISOString() };
+  if (nextStatus === 'READY_FOR_DELIVERY') {
+    patch.items = order.items.map(i => ({ ...i, kitchenStatus: 'READY' }));
+  } else if (nextStatus === 'IN_PREPARATION') {
+    patch.items = order.items.map(i => ({ ...i, kitchenStatus: 'PREPARING' }));
+  }
+  const saved = await updateRow('orders', 'id', order.id, patch);
+  if (!saved || !saved.length) { showToast('❌ فشل تحديث حالة الطلب فعلياً - تحقق من الصلاحيات وحاول مجدداً', 'error'); return; }
+  await addAuditLog('ORDER_STAGE_ADVANCED', 'MONITOR', `تحديث حالة الطلب #${order.order_number} إلى ${nextStatus}`);
+  showToast(`تم تحديث حالة الطلب #${order.order_number}`, 'success');
+  const tableForOrder = tables.find(t => t.number === order.table_number);
+  await loadAll();
+  if (tableForOrder) showTableOrderDetails(tableForOrder.id);
+}
+
+function render() {
+  renderAllOrders();
+  renderPastOrders();
+  const hallTables = tables.filter(t => t.hall_id === selectedHall);
+  document.getElementById('tablesGrid').innerHTML = hallTables.map(t => {
+    const nextOptions = (TABLE_TRANSITIONS[t.status] || []).filter(s => s !== 'AVAILABLE');
+    const activeOrders = orders.filter(o => o.table_number === t.number && !['COMPLETED','CANCELLED'].includes(o.status));
+    const canReleaseDirectly = t.status !== 'AVAILABLE' && (TABLE_TRANSITIONS[t.status] || []).includes('AVAILABLE') && !activeOrders.length;
+    return `
+    <div class="p-3.5 rounded-xl border text-center space-y-2 ${TABLE_COLORS[t.status]} ${activeOrders.length ? 'cursor-pointer ring-1 ring-amber-500/30' : ''}" ${activeOrders.length ? `data-table-details="${t.id}"` : ''}>
+      <div class="font-bold text-base font-mono">#${t.number}</div>
+      <div class="text-[10px] font-bold">${TABLE_LABELS[t.status]}</div>
+      ${activeOrders.length === 1 ? `<div class="text-[9px] text-amber-300">📋 طلب #${activeOrders[0].order_number} - ${ORDER_STATUS_LABELS[activeOrders[0].status] || activeOrders[0].status}</div>`
+        : activeOrders.length > 1 ? `<div class="text-[9px] text-amber-300">📋 ${activeOrders.length} طلبات نشطة - اضغط للتفاصيل</div>` : ''}
+      <button data-id="${t.id}" data-number="${t.number}" class="table-code-btn w-full py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 text-[10px] font-bold rounded-lg" onclick="event.stopPropagation()">🔑 الكود اليدوي</button>
+      ${canReleaseDirectly ? `<button data-id="${t.id}" class="table-release-btn w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-[10px] font-extrabold rounded-lg" onclick="event.stopPropagation()">🚪 الزبون غادر - تحرير الطاولة (جاهزة)</button>`
+        : activeOrders.length ? `<div class="text-[9px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg py-1">اضغط الطاولة لإنهاء الطلب وتحريرها</div>` : ''}
+      ${nextOptions.length ? `<select data-id="${t.id}" class="table-status-select w-full bg-slate-950 border border-slate-700 text-white text-[10px] rounded-lg px-1 py-1" onclick="event.stopPropagation()">
+        <option value="">تغيير الحالة...</option>
+        ${nextOptions.map(s => `<option value="${s}">${TABLE_LABELS[s]}</option>`).join('')}
+      </select>` : ''}
+      ${t.status !== 'AVAILABLE' ? `<button data-number="${t.number}" class="table-force-reset-btn w-full py-1 bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-[9px] font-bold rounded-lg" onclick="event.stopPropagation()">⚠️ إعادة ضبط قسري (طاولة عالقة)</button>` : ''}
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.table-release-btn').forEach(b => b.onclick = () => changeTableStatus(tables.find(t => t.id === b.dataset.id), 'AVAILABLE'));
+  document.querySelectorAll('.table-status-select').forEach(sel => sel.onchange = () => {
+    if (!sel.value) return;
+    changeTableStatus(tables.find(t => t.id === sel.dataset.id), sel.value);
+    sel.value = '';
+  });
+  document.querySelectorAll('[data-table-details]').forEach(el => el.onclick = () => showTableOrderDetails(el.dataset.tableDetails));
+  document.querySelectorAll('.table-code-btn').forEach(b => b.onclick = () => manageTableCode(b.dataset.id, +b.dataset.number));
+  document.querySelectorAll('.table-force-reset-btn').forEach(b => b.onclick = () => forceResetTable(+b.dataset.number));
+
+  // 🆕 لا يوجد طابور انتظار مرئي بعد الآن - بدلاً منه: قائمة جانبية موحّدة لكل الطلبات التي لم
+  // تُسلَّم بعد (قيد التحضير في المطبخ أو جاهزة)، كل طلب يظهر بطاولته مباشرة مع إجراء سريع.
+  const undelivered = orders.filter(o => ['SUBMITTED','PAID','KITCHEN_RECEIVED','IN_PREPARATION','READY_FOR_DELIVERY'].includes(o.status))
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  document.getElementById('undeliveredCount').textContent = undelivered.length;
+  document.getElementById('undeliveredList').innerHTML = undelivered.length ? undelivered.map(o => {
+    const stage = NEXT_KITCHEN_STAGE[o.status];
+    const isReady = o.status === 'READY_FOR_DELIVERY';
+    return `<div class="bg-slate-950 border ${isReady ? 'border-emerald-500/40' : 'border-slate-800'} rounded-xl p-3 space-y-2 text-xs">
+      <div class="flex justify-between items-center">
+        <div><span class="font-bold text-white">طلب #${o.order_number}</span><span class="text-slate-400 block text-[10px]">طاولة #${o.table_number ?? '-'}</span></div>
+        <span class="px-2 py-0.5 rounded font-bold ${isReady ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
+      </div>
+      <div class="flex gap-1.5">
+        ${stage ? `<button data-order-id="${o.id}" data-next="${stage.next}" class="undelivered-stage-btn flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg">${stage.label}</button>` : ''}
+        ${isReady ? `<button data-order-id="${o.id}" class="undelivered-deliver-btn flex-1 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg">✅ تم التسليم</button>` : ''}
+      </div>
+    </div>`;
+  }).join('') : `<div class="text-center py-8 text-slate-500 text-xs">لا توجد طلبات بانتظار التسليم حالياً</div>`;
+  document.querySelectorAll('.undelivered-stage-btn').forEach(b => b.onclick = () => advanceKitchenStage(orders.find(o => o.id === b.dataset.orderId), b.dataset.next));
+  document.querySelectorAll('.undelivered-deliver-btn').forEach(b => b.onclick = () => markDelivered(orders.find(o => o.id === b.dataset.orderId)));
+}
+
+// ---------------- الطلبات السابقة (الملبّاة/المكتملة أو الملغاة) - فتح، تعديل، أو حذف من طرف المراقب ----------------
+// طلب يصبح "سابقاً" بمجرد اكتماله (COMPLETED) أو إلغائه (CANCELLED) وتحرر طاولته،
+// فينتقل تلقائياً من قائمة "الطلبات النشطة" إلى هذه القائمة.
+let openPastOrderId = null; // معرّف الطلب السابق المفتوح حالياً للتعديل (إن وجد)
+let editedPastItems = null; // نسخة قابلة للتعديل من عناصر الطلب المفتوح
+
+function renderPastOrders() {
+  const today = new Date();
+  const list = orders.filter(o => {
+    if (!['COMPLETED','CANCELLED'].includes(o.status)) return false;
+    const d = new Date(o.created_at);
+    return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  }).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+
+  document.getElementById('pastOrdersCount').textContent = list.length;
+  const box = document.getElementById('pastOrdersList');
+  box.innerHTML = list.length ? list.map(o => `
+    <div class="bg-slate-950 border ${openPastOrderId === o.id ? 'border-amber-500/50' : 'border-slate-800'} rounded-xl p-2.5 flex justify-between items-center text-xs">
+      <div>
+        <span class="font-bold text-white">طلب #${o.order_number}</span>
+        <span class="text-slate-400">${o.table_number ? `- طاولة #${o.table_number}` : ''}</span>
+        <div class="text-[10px] ${o.status === 'COMPLETED' ? 'text-emerald-400' : 'text-rose-400'}">${o.status === 'COMPLETED' ? '✅ مكتمل' : '❌ ملغى'} - ${formatDA(o.total_amount)}</div>
+      </div>
+      <div class="flex gap-1.5">
+        <button data-id="${o.id}" class="open-past-order-btn px-2 py-1 bg-amber-600/80 hover:bg-amber-500 text-slate-950 font-bold text-[10px] rounded-lg">👁️ فتح</button>
+        <button data-id="${o.id}" class="delete-past-order-btn px-2 py-1 bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-[10px] rounded-lg">🗑️ حذف</button>
+      </div>
+    </div>`).join('') : `<div class="text-center py-6 text-slate-500 text-xs">لا توجد طلبات ملبّاة اليوم بعد</div>`;
+
+  box.querySelectorAll('.open-past-order-btn').forEach(b => b.onclick = () => openPastOrder(b.dataset.id));
+  box.querySelectorAll('.delete-past-order-btn').forEach(b => b.onclick = () => deletePastOrder(b.dataset.id));
+
+  // إن كان طلب مفتوحاً حالياً للتعديل، أعد رسم لوحة تفاصيله (وإلا أغلقها إن حُذف/لم يعد ضمن القائمة)
+  if (openPastOrderId) {
+    const stillThere = list.find(o => o.id === openPastOrderId);
+    if (stillThere) renderPastOrderDetails(stillThere); else closePastOrderDetails();
+  }
+}
+
+// فتح طلب سابق لعرض تفاصيله والسماح بتعديل الكميات/الأسعار أو حذف أصناف منه
+function openPastOrder(orderId) {
+  const order = orders.find(o => o.id === orderId);
+  if (!order) return;
+  openPastOrderId = orderId;
+  editedPastItems = (order.items || []).map(i => ({ ...i }));
+  renderPastOrderDetails(order);
+  document.getElementById('pastOrderDetails').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function closePastOrderDetails() {
+  openPastOrderId = null;
+  editedPastItems = null;
+  const box = document.getElementById('pastOrderDetails');
+  box.style.display = 'none';
+  box.innerHTML = '';
+}
+
+function recalcEditedPastTotal() {
+  return (editedPastItems || []).reduce((sum, i) => sum + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0);
+}
+
+function renderPastOrderDetails(order) {
+  const box = document.getElementById('pastOrderDetails');
+  box.style.display = 'block';
+  const total = recalcEditedPastTotal();
+  box.innerHTML = `
+    <div class="flex justify-between items-center mb-2">
+      <h4 class="font-bold text-sm text-white">📋 طلب #${order.order_number} ${order.table_number ? `- طاولة #${order.table_number}` : ''} <span class="text-[10px] font-normal ${order.status === 'COMPLETED' ? 'text-emerald-400' : 'text-rose-400'}">(${order.status === 'COMPLETED' ? 'مكتمل' : 'ملغى'})</span></h4>
+      <button id="closePastDetailsBtn" class="text-slate-500 hover:text-white text-xs">✕ إغلاق</button>
+    </div>
+    <div class="space-y-2">
+      ${editedPastItems.length ? editedPastItems.map((i, idx) => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex flex-wrap items-center gap-2 text-xs">
+          <span class="flex-1 min-w-[100px] text-slate-200 font-bold">${i.name}</span>
+          <label class="text-[10px] text-slate-500">كمية</label>
+          <input type="number" min="0" data-idx="${idx}" class="past-item-qty w-14 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-white text-center" value="${i.quantity}">
+          <label class="text-[10px] text-slate-500">سعر الوحدة</label>
+          <input type="number" min="0" data-idx="${idx}" class="past-item-price w-20 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-white text-center" value="${i.price}">
+          <button data-idx="${idx}" class="past-item-remove-btn px-2 py-1 bg-rose-600/70 hover:bg-rose-500 text-white font-bold rounded-lg">🗑️</button>
+        </div>`).join('') : `<div class="text-center py-4 text-slate-500 text-xs">لا توجد أصناف في هذا الطلب</div>`}
+    </div>
+    <div class="flex justify-between items-center mt-3 pt-3 border-t border-slate-800 text-sm">
+      <span class="font-bold text-white">الإجمالي بعد التعديل: <span class="text-amber-400">${formatDA(total)}</span></span>
+      <div class="flex gap-2">
+        <button id="savePastEditBtn" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg">💾 حفظ التعديلات</button>
+        <button id="deleteOpenPastOrderBtn" class="px-3 py-1.5 bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-[11px] rounded-lg">🗑️ حذف الطلب</button>
+      </div>
+    </div>`;
+
+  document.getElementById('closePastDetailsBtn').onclick = closePastOrderDetails;
+  document.getElementById('savePastEditBtn').onclick = () => savePastOrderEdits(order.id);
+  document.getElementById('deleteOpenPastOrderBtn').onclick = () => deletePastOrder(order.id);
+
+  box.querySelectorAll('.past-item-qty').forEach(inp => inp.onchange = () => {
+    editedPastItems[+inp.dataset.idx].quantity = Math.max(0, Number(inp.value) || 0);
+    renderPastOrderDetails(order);
+  });
+  box.querySelectorAll('.past-item-price').forEach(inp => inp.onchange = () => {
+    editedPastItems[+inp.dataset.idx].price = Math.max(0, Number(inp.value) || 0);
+    renderPastOrderDetails(order);
+  });
+  box.querySelectorAll('.past-item-remove-btn').forEach(b => b.onclick = () => {
+    editedPastItems.splice(+b.dataset.idx, 1);
+    renderPastOrderDetails(order);
+  });
+}
+
+async function savePastOrderEdits(orderId) {
+  if (!confirm('حفظ التعديلات على هذا الطلب السابق؟')) return;
+  const newTotal = recalcEditedPastTotal();
+  const saved = await updateRow('orders', 'id', orderId, {
+    items: editedPastItems,
+    total_amount: newTotal,
+    updated_at: new Date().toISOString()
+  });
+  if (!saved || !saved.length) return;
+  await addAuditLog('ORDER_EDITED', 'MONITOR', `تعديل طلب سابق رقم ${orderId} - الإجمالي الجديد ${newTotal}`);
+  showToast('تم حفظ تعديلات الطلب', 'success');
+  closePastOrderDetails();
+  loadAll();
+}
+
+async function deletePastOrder(orderId) {
+  if (!confirm('حذف هذا الطلب نهائياً من السجل؟')) return;
+  const ok = await deleteRow('orders', 'id', orderId);
+  if (!ok) return;
+  await addAuditLog('ORDER_DELETED', 'MONITOR', `حذف طلب تاريخي رقم ${orderId}`);
+  showToast('تم حذف الطلب', 'success');
+  if (openPastOrderId === orderId) closePastOrderDetails();
+  loadAll();
+}
+
+// ---------------- كل الطلبات النشطة في النظام (بحث + إدارة مباشرة) ----------------
+let allOrdersSearchTerm = '';
+document.getElementById('allOrdersSearch').addEventListener('input', (e) => { allOrdersSearchTerm = e.target.value.trim().toLowerCase(); renderAllOrders(); });
+
+function renderAllOrders() {
+  let list = orders.filter(o => !['COMPLETED','CANCELLED'].includes(o.status));
+  if (allOrdersSearchTerm) {
+    list = list.filter(o => String(o.order_number).includes(allOrdersSearchTerm) || String(o.table_number || '').includes(allOrdersSearchTerm));
+  }
+  list = list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  document.getElementById('allOrdersCount').textContent = list.length;
+  const box = document.getElementById('allOrdersList');
+  box.innerHTML = list.length ? list.map(o => `
+    <div data-order-id="${o.id}" class="all-order-item bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex justify-between items-center text-xs cursor-pointer hover:border-amber-500/40 transition">
+      <div>
+        <span class="font-bold text-white">طلب #${o.order_number}</span>
+        <span class="text-slate-400">${o.table_number ? `- طاولة #${o.table_number}` : '- بدون طاولة بعد'}</span>
+        <div class="text-[10px] text-slate-500">${ORDER_STATUS_LABELS[o.status] || o.status} · ${o.payment_status === 'PAID' ? '✅ مدفوع' : '⚠️ غير مدفوع'}</div>
+      </div>
+      <span class="text-amber-400 text-[10px]">عرض ›</span>
+    </div>`).join('') : `<div class="text-center py-6 text-slate-500 text-xs">لا توجد طلبات نشطة حالياً</div>`;
+
+  box.querySelectorAll('.all-order-item').forEach(el => el.onclick = () => {
+    const order = orders.find(o => o.id === el.dataset.orderId);
+    if (!order) return;
+    if (!order.table_number) { showToast('هذا الطلب غير مرتبط بطاولة بعد (بانتظار الدفع/التسكين)', 'info'); return; }
+    const table = tables.find(t => t.number === order.table_number);
+    if (!table) { showToast('تعذر إيجاد الطاولة المرتبطة بهذا الطلب', 'error'); return; }
+    if (table.hall_id !== selectedHall && halls.some(h => h.id === table.hall_id)) {
+      selectedHall = table.hall_id;
+      document.getElementById('hallSelect').value = selectedHall;
+      render();
+    }
+    showTableOrderDetails(table.id);
+    document.getElementById('tableOrderDetails').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+async function loadAll() {
+  tables = await fetchAll('tables', 'number');
+  tickets = await fetchAll('queue_tickets', 'created_at');
+  orders = await fetchAll('orders', 'created_at');
+  const previousHalls = halls;
+  const allHalls = await fetchAll('halls', 'name');
+  const isUnrestricted = currentProfile && (currentProfile.role === 'ADMIN' || currentProfile.role === 'MANAGER');
+  const permittedIds = currentProfile ? (currentProfile.assigned_hall_ids || []) : [];
+  halls = isUnrestricted ? allHalls : allHalls.filter(h => permittedIds.includes(h.id));
+  if (JSON.stringify(previousHalls.map(h=>h.id)) !== JSON.stringify(halls.map(h=>h.id))) {
+    if (!halls.length) {
+      document.getElementById('hallSelect').innerHTML = `<option value="">⚠️ لا توجد قاعة مسندة لك</option>`;
+      showToast('حسابك غير مسند لأي قاعة بعد - تواصل مع الإدارة', 'error');
+    } else {
+      document.getElementById('hallSelect').innerHTML = halls.map(h => `<option value="${h.id}">${h.name}</option>`).join('');
+      if (!halls.some(h => h.id === selectedHall)) selectedHall = halls[0].id;
+      document.getElementById('hallSelect').value = selectedHall;
+    }
+  }
+  const { data: s } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
+  settings = s;
+  render();
+}
+loadAll();
+subscribeToTable('tables', loadAll);
+subscribeToTable('queue_tickets', loadAll);
+subscribeToTable('orders', loadAll);
+subscribeToNewOrderAlerts(); // 🆕 تنبيه صوتي + مرئي للمراقب عند كل طلب جديد يصل
+});
+</script>
+</body>
+</html>

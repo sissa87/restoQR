@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>المسير</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8 space-y-6">
+
+  <div class="card p-6 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+    <div>
+      <span class="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-400 text-xs font-bold rounded-md border border-indigo-500/30">لوحة تحكم المسير</span>
+      <h2 class="text-xl font-bold text-white flex items-center gap-2 mt-1.5">🗂️ إدارة الموظفين، القائمة والأصناف، وأرشيف الطلبات اليومية</h2>
+    </div>
+    <div class="flex flex-wrap gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800" id="managerTabs">
+      <button data-tab="staff" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition bg-amber-600 text-white">👤 الموظفون</button>
+      <button data-tab="menu" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">🍽️ القائمة والأصناف</button>
+      <button data-tab="history" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">📜 أرشيف الطلبات</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="statsBox"></div>
+
+  <div id="tabContent"></div>
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/qr-engine.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/auth-gate.js"></script>
+<script>
+requireStaffAuth('MANAGER', () => {
+renderNav('manager.html');
+renderFooter();
+
+let activeTab = 'staff';
+let menuItems = [], categories = [], orders = [], revenueLog = [], profiles = [], halls = [], trustedDevices = [], tables = [];
+let editingItemId = null;
+let dishFormMode = null; // null | 'new' | 'edit'
+let dishEditingId = null;
+let historyFilter = 'today'; // today | previous | archived
+let historySelected = new Set();
+
+document.getElementById('managerTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn'); if (!btn) return;
+  activeTab = btn.dataset.tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.className = 'tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400');
+  btn.className = 'tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition bg-amber-600 text-white';
+  renderTab();
+});
+
+function renderStats() {
+  const revenueToday = revenueLog.filter(r => isToday(r.recorded_at));
+  const totalRevenueToday = revenueToday.reduce((s, r) => s + Number(r.amount), 0);
+  const activeOrders = orders.filter(o => !['COMPLETED', 'CANCELLED'].includes(o.status)).length;
+  const occupied = tables.filter(t => t.status === 'OCCUPIED' || t.status === 'PAYMENT_PENDING').length;
+  const cards = [
+    { label: 'الإيرادات المحصّلة اليوم', value: formatDA(totalRevenueToday), icon: '💰', color: 'emerald' },
+    { label: 'الطلبات النشطة الآن', value: activeOrders, icon: '📋', color: 'sky' },
+    { label: 'طاولات مشغولة الآن', value: occupied, icon: '🪑', color: 'violet' },
+    { label: 'عدد الأطباق في القائمة', value: menuItems.length, icon: '🍽️', color: 'amber' }
+  ];
+  document.getElementById('statsBox').innerHTML = cards.map(c => `
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-2"><span class="text-xl">${c.icon}</span><span class="text-[10px] text-${c.color}-400 font-bold">${c.label}</span></div>
+      <div class="text-xl font-extrabold text-white font-mono">${c.value}</div>
+    </div>`).join('');
+}
+
+function renderTab() {
+  const box = document.getElementById('tabContent');
+  if (activeTab === 'staff') box.innerHTML = staffHtml();
+  else if (activeTab === 'menu') box.innerHTML = menuAdminHtml();
+  else if (activeTab === 'history') box.innerHTML = historyHtml();
+  attachTabEvents();
+}
+
+// ---------------- Menu Admin (إدارة الأطباق والأصناف - إضافة وحذف) ----------------
+function menuAdminHtml() {
+  return `<div class="grid lg:grid-cols-5 gap-6">
+    <div class="lg:col-span-3 card p-5 space-y-3 max-h-[70vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="font-bold text-sm text-white">🍽️ قائمة الأطباق (${menuItems.length})</h3>
+        <button id="newDishBtn" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[11px] rounded-lg transition">➕ إضافة طبق جديد</button>
+      </div>
+      ${menuItems.map(m => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <img src="${m.image}" class="w-12 h-12 rounded-lg object-cover">
+            <div>
+              <div class="text-xs font-bold text-white">${m.name}</div>
+              <div class="text-[10px] text-amber-400 font-mono">${formatDA(m.price)} - ${(categories.find(c => c.key === m.category) || {}).label || m.category}</div>
+              ${m.notes ? `<div class="text-[10px] text-slate-500 mt-0.5">📝 ${m.notes}</div>` : ''}
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button data-id="${m.id}" class="edit-dish-btn px-2.5 py-1 bg-slate-800 text-slate-300 text-[10px] font-bold rounded-lg">تعديل</button>
+            <button data-id="${m.id}" class="edit-item-btn px-2.5 py-1 bg-slate-800 text-slate-300 text-[10px] font-bold rounded-lg">إضافات</button>
+            <button data-id="${m.id}" data-avail="${m.is_available}" class="toggle-avail-btn px-2.5 py-1 ${m.is_available ? 'bg-emerald-600' : 'bg-rose-600'} text-white text-[10px] font-bold rounded-lg">${m.is_available ? 'متاح' : 'موقوف'}</button>
+            <button data-id="${m.id}" data-name="${m.name}" class="delete-dish-btn px-2.5 py-1 bg-rose-600/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold rounded-lg">🗑️</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="lg:col-span-2 card p-5 space-y-3" id="addonEditorBox">
+      ${dishFormMode ? dishFormHtml() : editingItemId ? addonEditorHtml() : `<div class="text-center py-16 text-slate-500 text-xs">اختر طبقاً للتعديل، أو أضف طبقاً جديداً</div>`}
+    </div>
+  </div>
+  <div class="card p-5 space-y-3 mt-6">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-2">🏷️ أصناف الأطباق (${categories.length})</h3>
+    <div class="flex flex-wrap gap-2">
+      ${categories.length ? categories.map(c => `
+        <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg pr-1 pl-2.5 py-1.5 text-xs">
+          <span class="text-white font-bold">${c.label}</span>
+          <span class="text-slate-500 font-mono text-[10px]">(${menuItems.filter(m => m.category === c.key).length})</span>
+          <button data-id="${c.id}" data-key="${c.key}" data-label="${c.label}" class="delete-category-btn w-5 h-5 flex items-center justify-center rounded bg-rose-600/20 text-rose-400 text-[11px] font-bold">✕</button>
+        </div>`).join('') : `<div class="text-xs text-slate-500 italic">لا توجد أصناف بعد</div>`}
+    </div>
+    <div class="flex gap-2 pt-2 border-t border-slate-800">
+      <input id="newCategoryLabel" placeholder="اسم الصنف الجديد (مثال: عصائر طازجة)" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+      <button id="addCategoryBtn" class="px-3 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg whitespace-nowrap">➕ إضافة صنف</button>
+    </div>
+    <p class="text-[10px] text-slate-500">لا يمكن حذف صنف يحتوي على أطباق - عدّل أطباقه لصنف آخر أو احذفها أولاً.</p>
+  </div>`;
+}
+
+function dishFormHtml() {
+  const item = dishFormMode === 'edit' ? menuItems.find(m => m.id === dishEditingId) : null;
+  return `
+    <h4 class="font-bold text-sm text-white border-b border-slate-800 pb-2">${dishFormMode === 'edit' ? `تعديل: ${item.name}` : 'إضافة طبق جديد'}</h4>
+    <input id="dishName" placeholder="اسم الطبق *" value="${item ? item.name : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    <select id="dishCategory" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+      ${categories.length
+        ? categories.map(c => `<option value="${c.key}" ${item && item.category === c.key ? 'selected' : ''}>${c.label}</option>`).join('')
+        : `<option value="">أضف صنفاً أولاً من الأسفل ⬇️</option>`}
+    </select>
+    <input id="dishPrice" type="number" placeholder="السعر (د.ج) *" value="${item ? item.price : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    <div class="space-y-1.5">
+      <label class="text-[11px] text-slate-400 block">صورة الطبق</label>
+      <div class="flex items-center gap-2">
+        <img id="dishImagePreview" src="${item ? item.image : ''}" class="w-14 h-14 rounded-lg object-cover bg-slate-900 border border-slate-800 ${item && item.image ? '' : 'hidden'}">
+        <div class="flex-1 space-y-1.5">
+          <input id="dishImageFile" type="file" accept="image/*" class="w-full text-[11px] text-slate-400 file:ml-2 file:px-2.5 file:py-1.5 file:rounded-lg file:border-0 file:bg-amber-600 file:text-slate-950 file:font-bold file:text-[11px] file:cursor-pointer">
+          <input id="dishImage" placeholder="أو الصق رابط صورة من الويب" value="${item ? item.image : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" dir="ltr">
+        </div>
+      </div>
+      <p class="text-[10px] text-slate-500">اختر صورة من جهازك (تُرفع تلقائياً عند الحفظ)، أو الصق رابط جاهز - إن اخترت ملفاً فسيُستخدم بدل الرابط.</p>
+    </div>
+    <textarea id="dishDescription" placeholder="الوصف (يظهر للزبون)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white h-16">${item ? (item.description || '') : ''}</textarea>
+    <textarea id="dishNotes" placeholder="ملاحظات داخلية (للإدارة/المطبخ فقط، لا تظهر للزبون)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white h-14">${item ? (item.notes || '') : ''}</textarea>
+    <div class="flex gap-2">
+      <button id="saveDishBtn" class="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">${dishFormMode === 'edit' ? '💾 حفظ التعديلات' : '➕ إضافة الطبق'}</button>
+      <button id="cancelDishBtn" class="px-3 py-2 bg-slate-800 text-slate-300 font-bold text-xs rounded-lg">إلغاء</button>
+    </div>`;
+}
+
+async function uploadDishImage(file) {
+  if (file.size > 5 * 1024 * 1024) { showToast('الصورة كبيرة جداً - الحد الأقصى 5 ميغابايت', 'error'); return null; }
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const path = `dishes/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+  const { error } = await supabaseClient.storage.from('dish-images').upload(path, file, { upsert: false, cacheControl: '3600' });
+  if (error) { showToast('تعذّر رفع الصورة: ' + (error.message || 'خطأ غير معروف'), 'error'); return null; }
+  const { data } = supabaseClient.storage.from('dish-images').getPublicUrl(path);
+  return data.publicUrl;
+}
+
+async function saveDish() {
+  const name = document.getElementById('dishName').value.trim();
+  const category = document.getElementById('dishCategory').value;
+  const price = +document.getElementById('dishPrice').value || 0;
+  let image = document.getElementById('dishImage').value.trim();
+  const description = document.getElementById('dishDescription').value.trim();
+  const notes = document.getElementById('dishNotes').value.trim();
+  if (!name || !price) { showToast('يرجى إدخال اسم الطبق وسعره على الأقل', 'error'); return; }
+  if (!category) { showToast('أضف صنفاً واحداً على الأقل قبل إضافة طبق', 'error'); return; }
+
+  const fileInput = document.getElementById('dishImageFile');
+  const saveBtn = document.getElementById('saveDishBtn');
+  if (fileInput && fileInput.files && fileInput.files[0]) {
+    const originalLabel = saveBtn.textContent;
+    saveBtn.textContent = '⏳ جاري رفع الصورة...'; saveBtn.disabled = true;
+    const uploadedUrl = await uploadDishImage(fileInput.files[0]);
+    saveBtn.textContent = originalLabel; saveBtn.disabled = false;
+    if (!uploadedUrl) return;
+    image = uploadedUrl;
+  }
+
+  if (dishFormMode === 'edit') {
+    await updateRow('menu_items', 'id', dishEditingId, { name, category, price, image, description, notes });
+    await addAuditLog('DISH_UPDATED', 'MANAGER', `تعديل بيانات الطبق: ${name}`);
+    showToast('تم حفظ تعديلات الطبق', 'success');
+  } else {
+    await insertRow('menu_items', { id: genId('dish'), name, category, price, image, description, notes, is_available: true, custom_addons: [] });
+    await addAuditLog('DISH_ADDED', 'MANAGER', `إضافة طبق جديد: ${name}`);
+    showToast('تمت إضافة الطبق الجديد', 'success');
+  }
+  dishFormMode = null; dishEditingId = null;
+  loadAll();
+}
+
+async function deleteDish(id, name) {
+  if (!confirm(`حذف الطبق "${name}" نهائياً من المنيو؟ لا يمكن التراجع.`)) return;
+  const ok = await deleteRow('menu_items', 'id', id);
+  if (!ok) return;
+  await addAuditLog('DISH_DELETED', 'MANAGER', `حذف الطبق: ${name}`);
+  showToast('تم حذف الطبق', 'success');
+  if (dishEditingId === id) { dishFormMode = null; dishEditingId = null; }
+  if (editingItemId === id) editingItemId = null;
+  loadAll();
+}
+
+async function addCategory() {
+  const label = document.getElementById('newCategoryLabel').value.trim();
+  if (!label) { showToast('أدخل اسم الصنف', 'error'); return; }
+  if (categories.some(c => c.label === label)) { showToast('يوجد صنف بنفس الاسم بالفعل', 'error'); return; }
+  const key = 'cat_' + Math.random().toString(36).substring(2, 10);
+  const sort_order = categories.length ? Math.max(...categories.map(c => c.sort_order)) + 1 : 1;
+  const { error } = await supabaseClient.from('categories').insert({ id: genId('cat'), key, label, sort_order });
+  if (error) { showToast(friendlyRpcError(error) || 'تعذّرت إضافة الصنف', 'error'); return; }
+  await addAuditLog('CATEGORY_ADDED', 'MANAGER', `إضافة صنف جديد: ${label}`);
+  showToast('تمت إضافة الصنف', 'success');
+  loadAll();
+}
+
+async function deleteCategory(id, key, label) {
+  const count = menuItems.filter(m => m.category === key).length;
+  if (count > 0) { showToast(`لا يمكن حذف "${label}" - يحتوي ${count} طبقاً، عدّل أطباقه لصنف آخر أو احذفها أولاً`, 'error'); return; }
+  if (!confirm(`حذف صنف "${label}"؟`)) return;
+  const ok = await deleteRow('categories', 'id', id);
+  if (!ok) return;
+  await addAuditLog('CATEGORY_DELETED', 'MANAGER', `حذف صنف: ${label}`);
+  showToast('تم حذف الصنف', 'success');
+  loadAll();
+}
+
+function addonEditorHtml() {
+  const item = menuItems.find(m => m.id === editingItemId);
+  if (!item) return '';
+  const addons = item.custom_addons || [];
+  return `
+    <h4 class="font-bold text-sm text-white border-b border-slate-800 pb-2">إضافات: ${item.name}</h4>
+    <div class="space-y-2 max-h-56 overflow-y-auto">
+      ${addons.length ? addons.map(a => `
+        <div class="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-slate-800 text-xs">
+          <span>${a.name} <span class="text-amber-400 font-mono">+${formatDA(a.price)}</span></span>
+          <button data-item="${item.id}" data-addon="${a.id}" class="remove-addon-btn text-rose-400 text-[10px]">حذف</button>
+        </div>`).join('') : `<div class="text-xs text-slate-500 italic">لا توجد إضافات بعد</div>`}
+    </div>
+    <div class="flex gap-2 pt-2 border-t border-slate-800">
+      <input id="newAddonName" placeholder="اسم الإضافة" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white">
+      <input id="newAddonPrice" type="number" value="100" class="w-20 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white">
+      <button id="addAddonBtn" class="px-3 py-1.5 bg-amber-600 text-slate-950 font-bold text-xs rounded-lg">➕</button>
+    </div>`;
+}
+
+async function toggleAvailability(id, current) {
+  await updateRow('menu_items', 'id', id, { is_available: !current });
+  loadAll();
+}
+
+async function addAddon(itemId) {
+  const name = document.getElementById('newAddonName').value.trim();
+  const price = +document.getElementById('newAddonPrice').value || 0;
+  if (!name) return;
+  const item = menuItems.find(m => m.id === itemId);
+  const updated = [...(item.custom_addons || []), { id: genId('ad'), name, price, isAvailable: true }];
+  await updateRow('menu_items', 'id', itemId, { custom_addons: updated });
+  await loadAll();
+}
+
+async function removeAddon(itemId, addonId) {
+  const item = menuItems.find(m => m.id === itemId);
+  const updated = (item.custom_addons || []).filter(a => a.id !== addonId);
+  await updateRow('menu_items', 'id', itemId, { custom_addons: updated });
+  await loadAll();
+}
+
+// ---------------- الموظفون (صلاحيات الموظفين) ----------------
+function staffHtml() {
+  const roleOptions = ['MANAGER','CASHIER','KITCHEN','MONITOR','HALL_TV'];
+  return `<div class="card p-6 space-y-4">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">👤 إدارة أدوار الموظفين</h3>
+    <div class="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-indigo-300 text-[11px] leading-relaxed">
+      لإضافة موظف جديد: أنشئ حسابه أولاً (بريد + كلمة مرور) من <b>Supabase Dashboard → Authentication → Users</b>، وسيظهر تلقائياً هنا بعد أول محاولة دخول له، حدد له دوره وقاعته من هذه القائمة.
+      <div class="mt-1 opacity-80">ملاحظة: حسابات "الآدمن" تُدار حصرياً من صفحة الآدمن.</div>
+    </div>
+    <div class="space-y-3">
+      ${profiles.length ? profiles.filter(p => p.role !== 'ADMIN').map(p => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 grid md:grid-cols-5 gap-3 items-center text-xs">
+          <div><div class="font-bold text-white">${p.full_name || '(بدون اسم)'}</div><div class="text-[10px] text-slate-500 font-mono break-all">${p.id}</div></div>
+          <select data-id="${p.id}" class="role-select bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-white">
+            <option value="">— بلا دور —</option>
+            ${roleOptions.map(r => `<option value="${r}" ${p.role===r?'selected':''}>${STAFF_ROLE_LABELS[r]}</option>`).join('')}
+          </select>
+          <select data-id="${p.id}" class="hall-select bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-white">
+            <option value="">⚠️ بدون صلاحية على أي قاعة</option>
+            ${halls.map(h => `<option value="${h.id}" ${(p.assigned_hall_ids||[]).includes(h.id) ? 'selected' : ''}>${h.name}</option>`).join('')}
+          </select>
+          <label class="flex items-center gap-1.5 text-slate-300"><input type="checkbox" data-id="${p.id}" class="active-toggle w-4 h-4" ${p.is_active ? 'checked':''}> مفعّل</label>
+          <button data-id="${p.id}" class="save-profile-btn py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-lg">💾 حفظ</button>
+          ${trustedDevicesCellHtml(p)}
+        </div>`).join('') : `<div class="text-center py-8 text-slate-500 text-xs">لا يوجد أي موظف سجّل دخول بعد. أنشئ حساباً من Supabase أولاً.</div>`}
+    </div>
+  </div>`;
+}
+
+function trustedDevicesCellHtml(p) {
+  const devices = trustedDevices.filter(d => d.user_id === p.id);
+  if (!devices.length) return `<div class="md:col-span-5 text-[10px] text-slate-600">🖥️ لا توجد أجهزة "تذكرني" موثوقة لهذا الموظف</div>`;
+  return `<div class="md:col-span-5 flex flex-wrap gap-2 pt-1 border-t border-slate-800/60">
+    ${devices.map(d => `
+      <span class="inline-flex items-center gap-1.5 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-300">
+        🖥️ ${d.device_label || 'جهاز غير مسمّى'}
+        <button data-id="${d.id}" class="revoke-device-btn text-rose-400 font-bold">✕ إلغاء</button>
+      </span>`).join('')}
+  </div>`;
+}
+
+async function revokeTrustedDevice(deviceRowId) {
+  const ok = await deleteRow('trusted_devices', 'id', deviceRowId);
+  if (!ok) return;
+  await addAuditLog('TRUSTED_DEVICE_REVOKED', 'MANAGER', `إلغاء ثقة جهاز محفوظ (تذكرني) رقم ${deviceRowId}`);
+  showToast('تم إلغاء هذا الجهاز، لن يُعامل بعد الآن كجهاز موثوق لتسجيل الدخول السريع', 'success');
+  loadAll();
+}
+
+async function saveProfile(userId) {
+  const row = document.querySelector(`.role-select[data-id="${userId}"]`).closest('.grid');
+  const role = row.querySelector('.role-select').value || null;
+  const hallId = row.querySelector('.hall-select').value || null;
+  const isActive = row.querySelector('.active-toggle').checked;
+  await updateRow('profiles', 'id', userId, { role, assigned_hall_id: hallId, assigned_hall_ids: hallId ? [hallId] : [], is_active: isActive });
+  await addAuditLog('STAFF_ROLE_UPDATED', 'MANAGER', `تحديث دور/قاعة الموظف ${userId}`);
+  showToast('تم حفظ بيانات الموظف', 'success');
+  loadAll();
+}
+
+// ---------------- أرشيف الطلبات اليومية (عرض/حذف/أرشفة/تنزيل) ----------------
+function isToday(dateStr) {
+  const d = new Date(dateStr), now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
+function getHistoryOrders() {
+  const closed = orders.filter(o => ['COMPLETED','CANCELLED'].includes(o.status));
+  if (historyFilter === 'today') return closed.filter(o => isToday(o.created_at) && !o.is_archived);
+  if (historyFilter === 'previous') return closed.filter(o => !isToday(o.created_at) && !o.is_archived);
+  return closed.filter(o => o.is_archived);
+}
+
+function historyHtml() {
+  const list = getHistoryOrders().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  const listTotal = list.reduce((s, o) => s + Number(o.total_amount), 0);
+  const filters = [
+    { id: 'today', label: '📅 طلبات اليوم' },
+    { id: 'previous', label: '🗓️ الطلبات السابقة' },
+    { id: 'archived', label: '🗄️ الأرشيف' }
+  ];
+  return `<div class="card p-6 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-sm text-white">📜 سجل الطلبات (${list.length})</h3>
+        <div class="text-[11px] text-amber-400 font-mono font-bold mt-0.5">💰 إجمالي هذه القائمة: ${formatDA(listTotal)}</div>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="exportExcelBtn" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg transition">📥 تحميل Excel</button>
+        ${historyFilter !== 'archived' ? `<button id="archiveSelectedBtn" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] rounded-lg transition">🗄️ أرشفة المحدد</button>` : ''}
+        <button id="deleteSelectedBtn" class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] rounded-lg transition">🗑️ حذف المحدد</button>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      ${filters.map(f => `<button data-filter="${f.id}" class="history-filter-btn px-3 py-1.5 rounded-xl text-xs font-bold transition ${historyFilter===f.id ? 'bg-amber-600 text-white' : 'bg-slate-900 text-slate-400'}">${f.label}</button>`).join('')}
+    </div>
+    ${list.length ? `<label class="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer w-fit">
+      <input type="checkbox" id="historySelectAll" class="w-4 h-4">
+      <span>تحديد الكل (${list.length})</span>
+    </label>` : ''}
+    <div class="space-y-2 max-h-[32rem] overflow-y-auto">
+      ${list.length ? list.map(o => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs hover:border-amber-500/30 transition">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" data-id="${o.id}" class="history-select w-4 h-4" ${historySelected.has(o.id) ? 'checked' : ''}>
+            <div class="flex-1 flex flex-wrap justify-between gap-2">
+              <span class="font-bold text-white">طلب #${o.order_number} ${o.table_number ? `- طاولة #${o.table_number}` : ''}</span>
+              <span class="text-slate-400">${new Date(o.created_at).toLocaleString('ar-DZ')}</span>
+              <span class="px-2 py-0.5 rounded font-bold ${o.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${o.status === 'COMPLETED' ? 'مكتمل' : 'ملغى'}</span>
+              <span class="text-amber-400 font-mono">${formatDA(o.total_amount)}</span>
+            </div>
+            <button data-toggle="${o.id}" class="history-toggle-btn px-2 py-1 bg-slate-800 text-slate-300 rounded-lg text-[10px] font-bold" onclick="event.preventDefault(); event.stopPropagation();">تفاصيل ▾</button>
+          </label>
+          <div id="history-details-${o.id}" class="hidden mt-2.5 pt-2.5 border-t border-slate-800 space-y-1.5">
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+              <span>💳 الدفع: ${o.payment_status === 'PAID' ? 'مدفوع' : 'غير مدفوع'}${o.payment_method ? ` (${o.payment_method === 'CASH' ? 'نقداً' : o.payment_method})` : ''}</span>
+              ${o.customer_name ? `<span>👤 ${o.customer_name}</span>` : ''}
+              ${o.is_archived ? `<span>🗄️ مؤرشف بتاريخ ${o.archived_at ? new Date(o.archived_at).toLocaleDateString('ar-DZ') : ''}</span>` : ''}
+            </div>
+            <div class="space-y-1">
+              ${(o.items || []).map(i => `<div class="flex justify-between items-center bg-slate-900/70 px-2 py-1 rounded-lg">
+                <span class="text-slate-200">${i.quantity}x ${i.name}${i.notes ? ` <span class="text-amber-300 text-[9px]">(${i.notes})</span>` : ''}</span>
+                <span class="text-slate-400 font-mono">${formatDA((Number(i.price)||0) * (Number(i.quantity)||0))}</span>
+              </div>`).join('') || `<div class="text-slate-500 italic">لا توجد أصناف مسجَّلة</div>`}
+            </div>
+          </div>
+        </div>`).join('') : `<div class="text-center py-10 text-slate-500 text-xs">لا توجد طلبات في هذا القسم</div>`}
+    </div>
+  </div>`;
+}
+
+function exportHistoryToExcel() {
+  const list = getHistoryOrders();
+  if (!list.length) { showToast('لا توجد طلبات لتصديرها في هذا القسم', 'error'); return; }
+  const rows = list.map(o => ({
+    'رقم الطلب': o.order_number, 'الطاولة': o.table_number || '-', 'الحالة': o.status === 'COMPLETED' ? 'مكتمل' : 'ملغى',
+    'حالة الدفع': o.payment_status, 'طريقة الدفع': o.payment_method || '-', 'المبلغ (د.ج)': o.total_amount,
+    'عدد الأصناف': (o.items || []).length, 'التاريخ والوقت': new Date(o.created_at).toLocaleString('ar-DZ')
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'الطلبات');
+  const fname = `طلبات-${historyFilter === 'today' ? 'اليوم' : historyFilter === 'previous' ? 'سابقة' : 'الأرشيف'}-${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
+async function archiveSelected() {
+  if (!historySelected.size) { showToast('اختر طلباً واحداً على الأقل', 'error'); return; }
+  for (const id of historySelected) await updateRow('orders', 'id', id, { is_archived: true, archived_at: new Date().toISOString() });
+  await addAuditLog('ORDERS_ARCHIVED', 'MANAGER', `أرشفة ${historySelected.size} طلب`);
+  showToast('تمت الأرشفة بنجاح', 'success');
+  historySelected.clear();
+  loadAll();
+}
+
+async function deleteSelectedHistory() {
+  if (!historySelected.size) { showToast('اختر طلباً واحداً على الأقل', 'error'); return; }
+  if (!confirm(`حذف ${historySelected.size} طلب نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`)) return;
+  for (const id of historySelected) await deleteRow('orders', 'id', id);
+  await addAuditLog('ORDERS_DELETED', 'MANAGER', `حذف ${historySelected.size} طلب نهائياً`);
+  showToast('تم الحذف بنجاح', 'success');
+  historySelected.clear();
+  loadAll();
+}
+
+function attachTabEvents() {
+  document.querySelectorAll('.edit-item-btn').forEach(b => b.onclick = () => { editingItemId = b.dataset.id; dishFormMode = null; renderTab(); });
+  document.querySelectorAll('.edit-dish-btn').forEach(b => b.onclick = () => { dishFormMode = 'edit'; dishEditingId = b.dataset.id; editingItemId = null; renderTab(); });
+  document.querySelectorAll('.toggle-avail-btn').forEach(b => b.onclick = () => toggleAvailability(b.dataset.id, b.dataset.avail === 'true'));
+  document.querySelectorAll('.remove-addon-btn').forEach(b => b.onclick = () => removeAddon(b.dataset.item, b.dataset.addon));
+  document.querySelectorAll('.delete-dish-btn').forEach(b => b.onclick = () => deleteDish(b.dataset.id, b.dataset.name));
+  document.querySelectorAll('.delete-category-btn').forEach(b => b.onclick = () => deleteCategory(b.dataset.id, b.dataset.key, b.dataset.label));
+  const addCategoryBtn = document.getElementById('addCategoryBtn'); if (addCategoryBtn) addCategoryBtn.onclick = addCategory;
+  const addBtn = document.getElementById('addAddonBtn'); if (addBtn) addBtn.onclick = () => addAddon(editingItemId);
+  const newDishBtn = document.getElementById('newDishBtn'); if (newDishBtn) newDishBtn.onclick = () => { dishFormMode = 'new'; dishEditingId = null; editingItemId = null; renderTab(); };
+  const saveDishBtn = document.getElementById('saveDishBtn'); if (saveDishBtn) saveDishBtn.onclick = saveDish;
+  const cancelDishBtn = document.getElementById('cancelDishBtn'); if (cancelDishBtn) cancelDishBtn.onclick = () => { dishFormMode = null; dishEditingId = null; renderTab(); };
+  const dishImageFile = document.getElementById('dishImageFile');
+  if (dishImageFile) dishImageFile.onchange = () => {
+    const file = dishImageFile.files[0];
+    const preview = document.getElementById('dishImagePreview');
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => { preview.src = e.target.result; preview.classList.remove('hidden'); };
+    reader.readAsDataURL(file);
+  };
+  document.querySelectorAll('.save-profile-btn').forEach(b => b.onclick = () => saveProfile(b.dataset.id));
+  document.querySelectorAll('.revoke-device-btn').forEach(b => b.onclick = () => revokeTrustedDevice(b.dataset.id));
+  document.querySelectorAll('.history-filter-btn').forEach(b => b.onclick = () => { historyFilter = b.dataset.filter; historySelected.clear(); renderTab(); });
+  document.querySelectorAll('.history-select').forEach(b => b.onchange = () => { if (b.checked) historySelected.add(b.dataset.id); else historySelected.delete(b.dataset.id); });
+  const selectAllBox = document.getElementById('historySelectAll');
+  if (selectAllBox) selectAllBox.onchange = () => {
+    document.querySelectorAll('.history-select').forEach(b => { b.checked = selectAllBox.checked; if (selectAllBox.checked) historySelected.add(b.dataset.id); else historySelected.delete(b.dataset.id); });
+  };
+  document.querySelectorAll('.history-toggle-btn').forEach(b => b.onclick = () => {
+    const panel = document.getElementById(`history-details-${b.dataset.toggle}`);
+    const open = !panel.classList.contains('hidden');
+    panel.classList.toggle('hidden');
+    b.textContent = open ? 'تفاصيل ▾' : 'إخفاء ▴';
+  });
+  const exportBtn = document.getElementById('exportExcelBtn'); if (exportBtn) exportBtn.onclick = exportHistoryToExcel;
+  const archiveBtn = document.getElementById('archiveSelectedBtn'); if (archiveBtn) archiveBtn.onclick = archiveSelected;
+  const deleteHistBtn = document.getElementById('deleteSelectedBtn'); if (deleteHistBtn) deleteHistBtn.onclick = deleteSelectedHistory;
+}
+
+async function loadAll() {
+  tables = await fetchAll('tables', 'number');
+  menuItems = await fetchAll('menu_items', 'category');
+  categories = await fetchAll('categories', 'sort_order');
+  orders = await fetchAllPaginated('orders', 'created_at');
+  revenueLog = await fetchAll('revenue_log', 'recorded_at', false);
+  profiles = await fetchAll('profiles', 'created_at');
+  halls = await fetchAll('halls', 'name');
+  trustedDevices = await fetchAll('trusted_devices', 'created_at', false);
+  renderStats();
+  renderTab();
+}
+loadAll();
+subscribeToTable('orders', renderStats);
+subscribeToTable('tables', loadAll);
+});
+</script>
+</body>
+</html>

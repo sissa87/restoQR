@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>طلبية الزبون</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="css/style.css">
+<style>
+  /* 🎨 هوية بصرية خاصة بصفحة الزبون فقط (لا تؤثر على صفحات الموظفين) */
+  body.customer-page {
+    background:
+      radial-gradient(1100px 550px at 12% -8%, rgba(245,158,11,.16), transparent 60%),
+      radial-gradient(900px 500px at 105% 5%, rgba(220,38,38,.12), transparent 55%),
+      #08090c;
+  }
+  .hero-flame { background: linear-gradient(135deg, #fde68a 0%, #f59e0b 45%, #dc2626 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .cat-pill { border-radius: 999px; }
+  .cat-pill.active { background: linear-gradient(135deg,#fbbf24,#ea580c); color:#1c0f02; box-shadow: 0 8px 20px -8px rgba(245,158,11,.65); }
+  .dish-card { border-radius: 1.5rem !important; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .dish-card:hover { transform: translateY(-4px); box-shadow: 0 16px 32px -14px rgba(245,158,11,.3); border-color: rgba(245,158,11,.4); }
+  .price-tag { background: rgba(8,9,12,.75); backdrop-filter: blur(4px); border: 1px solid rgba(245,158,11,.4); border-radius: 999px; }
+</style>
+</head>
+<body class="customer-page text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8">
+
+  <div class="text-center mb-6 pt-1">
+    <div class="text-4xl mb-1">🔥</div>
+    <h1 class="text-2xl sm:text-3xl font-black hero-flame">قائمة الطعام</h1>
+    <p class="text-xs text-slate-400 mt-1.5">اختر أطباقك المفضّلة وأرسل طلبك مباشرة للمطبخ</p>
+  </div>
+
+  <!-- Security Gate: يشترط تفعيل GPS/واي فاي قبل أي مسح -->
+  <div class="card p-5 mb-6" id="securityGateCard" style="display:none">
+    <h3 class="font-bold text-sm text-white flex items-center gap-2 mb-3"><span>📡</span><span>.........</span></h3>
+    <div id="securityGateStatus" class="text-xs"></div>
+  </div>
+
+  <!-- QR / Table Session Card (وضع الطلب من الطاولة) -->
+  <div class="card p-5 mb-6" id="qrSessionCard" style="display:none">
+    <h3 class="font-bold text-sm text-white flex items-center gap-2 mb-4">
+      <span>🔒</span><span>لطاولة الآمنة (QR)</span>
+    </h3>
+    <div class="grid sm:grid-cols-3 gap-3 items-end">
+      <div>
+        <label class="text-[11px] text-slate-400 block mb-1">رقم الطاولة</label>
+        <input id="manualTableNumber" type="number" placeholder="مثال: 3" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+      </div>
+      <div>
+        <label class="text-[11px] text-slate-400 block mb-1">الكود اليدوي السري للطاولة</label>
+        <input id="manualTableToken" placeholder="الكود المكتوب على بطاقة الطاولة" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500" dir="ltr">
+      </div>
+      <div>
+        <button id="verifyBtn" class="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold text-xs rounded-xl transition">✅ تحقق وافتح جلسة الطاولة</button>
+      </div>
+    </div>
+    <p class="text-[10px] text-slate-500 mt-2">امسح رمز QR الملصق على طاولتك مباشرة بكاميرا الجوال، أو أدخل الكود السري يدوياً إن تعذّر المسح.</p>
+    <div id="qrStatus" class="mt-3 text-xs"></div>
+    <button id="showManualCodeBtn" class="mt-3 text-[11px] text-amber-400 underline">🔑 أو الدخول المباشر بالكود اليدوي من الاستقبال</button>
+  </div>
+
+  <!-- الكود اليدوي الخاص بالطاولة (من الإدارة) — يتجاوز QR/GPS/WiFi بالكامل، والنظام يتعرف على الطاولة من الكود نفسه -->
+  <div class="card p-5 mb-6" id="manualCodeCard" style="display:none">
+    <h3 class="font-bold text-sm text-white flex items-center gap-2 mb-3"><span>🔑</span><span>الدخول بالكود اليدوي</span></h3>
+    <p class="text-[10px] text-slate-500 mb-3">أدخل الكود المكتوب على بطاقة طاولتك فقط - النظام يتعرف تلقائياً على رقم طاولتك من الكود، بدون الحاجة لكتابته.</p>
+    <div class="grid sm:grid-cols-3 gap-3 items-end">
+      <div class="sm:col-span-2">
+        <label class="text-[11px] text-slate-400 block mb-1">الكود اليدوي الخاص بطاولتك</label>
+        <input id="manualCodeInput" placeholder="الكود المكتوب على بطاقة الطاولة" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500" dir="ltr">
+      </div>
+      <button id="manualCodeBtn" class="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold text-xs rounded-xl transition">دخول</button>
+    </div>
+    <div id="manualCodeStatus" class="mt-3 text-xs"></div>
+
+    <button id="showGeneralCodeBtn" class="mt-4 text-[11px] text-amber-400 underline">🏷️ ليس عندي كود طاولة خاص؟ استخدم الكود العام للمطعم + رقم الطاولة</button>
+    <div id="generalCodeWrap" class="grid sm:grid-cols-3 gap-3 items-end mt-3" style="display:none">
+      <div>
+        <label class="text-[11px] text-slate-400 block mb-1">رقم الطاولة</label>
+        <input id="generalCodeTableNumber" type="number" placeholder="مثال: 3" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+      </div>
+      <div>
+        <label class="text-[11px] text-slate-400 block mb-1">الكود العام للمطعم</label>
+        <input id="generalCodeInput" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500" dir="ltr">
+      </div>
+      <button id="generalCodeBtn" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-xs rounded-xl transition">دخول بالكود العام</button>
+    </div>
+  </div>
+
+  <!-- تأكيد نهائي قبل إرسال الطلب - لا تعديلات بعده -->
+  <div id="confirmOrderModal" class="fixed inset-0 z-[9998] bg-slate-950/90 flex items-center justify-center p-4" style="display:none">
+    <div class="max-w-sm w-full card p-6 space-y-4 text-center">
+      <div class="text-3xl">⚠️</div>
+      <h3 class="font-extrabold text-white text-sm">تأكيد الطلب النهائي</h3>
+      <p class="text-xs text-slate-400">بعد التأكيد لن تتمكن من إجراء أي تعديل على هذا الطلب. تحقق من طلبك جيداً قبل المتابعة.</p>
+      <div class="flex gap-2">
+        <button id="cancelConfirmOrderBtn" class="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-xl transition">⬅️ تراجع وتعديل</button>
+        <button id="finalConfirmOrderBtn" class="flex-1 py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold text-xs rounded-xl transition">✅ تأكيد نهائي</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- وصل طلب مود "الطلب من الطاولة" (يظهر بعد الإرسال) -->
+  <div class="card p-8 mb-6 text-center space-y-4 border-2 border-emerald-500/50" id="tableOrderReceiptBox" style="display:none">
+    <div class="text-xs font-bold text-emerald-400 tracking-wider">✅ تم إرسال طلبك للمطبخ</div>
+    <div id="tableOrderNumberDisplay" class="text-5xl font-mono font-black text-emerald-400"></div>
+    <div id="tableOrderReceiptTotal" class="text-lg font-mono text-emerald-300"></div>
+    <pre id="tableReceiptPreview" dir="ltr" class="text-right bg-slate-950 border border-slate-800 rounded-xl p-3 text-[11px] text-slate-300 whitespace-pre-wrap font-mono text-left"></pre>
+    <div class="flex gap-2">
+      <button id="downloadTableReceiptBtn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-xs rounded-xl transition">💾 حفظ الوصل</button>
+      <button id="continueOrderingBtn" class="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-xl transition">➕ طلب إضافي</button>
+    </div>
+  </div>
+
+  <div id="exitedScreen" class="card p-8 text-center space-y-2" style="display:none">
+    <div class="text-3xl">👋</div>
+    <h3 class="font-bold text-sm text-white">تم إنهاء عرض الطلب على هذا الجهاز</h3>
+    <p class="text-xs text-slate-400">جلستك تبقى صالحة حتى نهاية مدتها أو حتى ينهيها الموظف المسؤول. أعد فتح الصفحة أو امسح QR الطاولة/المطعم من جديد للعودة.</p>
+  </div>
+
+  <div id="orderingArea" style="display:none">
+  <!-- Category Filters -->
+  <div class="flex items-center justify-between gap-2 mb-6">
+    <div class="flex items-center gap-2 overflow-x-auto pb-2" id="categoryTabs"></div>
+    <button id="customerExitBtn" class="shrink-0 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-rose-400 font-bold text-[11px] rounded-lg transition">🚪 خروج</button>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-6">
+    <!-- Menu Grid -->
+    <div class="lg:col-span-2 grid sm:grid-cols-2 gap-4" id="menuGrid">
+      <div class="col-span-2 flex justify-center py-10"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Cart -->
+    <div class="space-y-5">
+      <div class="card p-5 sticky top-4" style="border-radius:1.5rem">
+        <h3 class="font-bold text-sm text-white flex items-center gap-2 mb-4">🛒 سلة الطلبات <span id="cartCount" class="text-amber-400"></span></h3>
+        <div id="cartItems" class="space-y-3 max-h-[40vh] overflow-y-auto"></div>
+        <p id="emptyCartMsg" class="text-xs text-slate-500 italic text-center py-6">اختر أطباقك من القائمة لتبدأ 🍽️</p>
+
+        <form id="orderForm" class="space-y-2 pt-3 border-t border-slate-800 hidden">
+          <div class="bg-slate-950 p-3 rounded-xl border border-amber-500/20 flex justify-between items-center">
+            <span class="text-xs text-slate-400 font-bold">المجموع الإجمالي:</span>
+            <span id="cartTotal" class="text-lg font-extrabold text-amber-400 font-mono">0 د.ج</span>
+          </div>
+          <button type="submit" id="submitOrderBtn" class="w-full py-3 bg-gradient-to-l from-amber-500 to-orange-600 hover:brightness-110 text-slate-950 font-extrabold text-xs rounded-xl transition">📨 تأكيد وإرسال الطلب للمطبخ</button>
+        </form>
+      </div>
+
+      <div class="card p-5" id="activeOrdersBox" style="display:none; border-radius:1.5rem">
+        <h4 class="font-bold text-xs text-amber-400 flex items-center gap-2 border-b border-slate-800 pb-2 mb-3">🔥 الطلبات النشطة على طاولتك</h4>
+        <div id="activeOrdersList" class="space-y-2"></div>
+      </div>
+    </div>
+  </div>
+  </div>
+</main>
+
+<!-- Addon Modal -->
+<div id="addonModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden items-center justify-center p-4">
+  <div class="bg-slate-900 border border-amber-500/20 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl shadow-amber-900/20">
+    <div class="flex justify-between items-start border-b border-slate-800 pb-3">
+      <div>
+        <h3 id="modalItemName" class="font-bold text-base text-white"></h3>
+        <p id="modalItemPrice" class="text-xs text-amber-400 font-mono font-bold"></p>
+      </div>
+      <button id="modalCloseBtn" class="text-slate-400 hover:text-white text-xs font-bold bg-slate-800 px-2.5 py-1 rounded-lg">إلغاء</button>
+    </div>
+    <div id="modalAddonsList" class="space-y-2"></div>
+    <input id="modalNotes" type="text" placeholder="ملاحظات للشيف (اختياري)..." class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
+    <button id="modalConfirmBtn" class="w-full py-3 bg-gradient-to-l from-amber-500 to-orange-600 hover:brightness-110 text-slate-950 font-black text-xs rounded-xl transition">➕ إضافة للسلة</button>
+  </div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/qr-engine.js"></script>
+<script src="js/nav.js"></script>
+<script>
+renderNav('menu.html');
+renderFooter();
+
+let menuItems = [], categories = [], tables = [], activeCategory = 'all';
+let cart = []; // { item, quantity, notes, selectedAddons: [{addonId,name,price}] }
+let selectedTableNumber = null, activeSession = null;
+let pendingAddonItem = null, pendingAddonSelection = [];
+
+const deviceId = getDeviceId();
+const deviceInfo = getDeviceInfo();
+
+function renderCategoryTabs() {
+  const tabs = [{ id: 'all', label: 'الكل' }, ...categories.map(c => ({ id: c.key, label: c.label }))];
+  document.getElementById('categoryTabs').innerHTML = tabs.map(c => `
+    <button data-cat="${c.id}" class="cat-btn cat-pill px-4 py-2 text-xs font-bold whitespace-nowrap transition ${c.id==='all' ? 'active' : 'bg-slate-900 text-slate-400 border border-slate-800'}">${c.label}</button>
+  `).join('');
+}
+
+document.getElementById('categoryTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.cat-btn');
+  if (!btn) return;
+  activeCategory = btn.dataset.cat;
+  document.querySelectorAll('.cat-btn').forEach(b => b.className = 'cat-btn cat-pill px-4 py-2 text-xs font-bold whitespace-nowrap transition bg-slate-900 text-slate-400 border border-slate-800');
+  btn.className = 'cat-btn cat-pill px-4 py-2 text-xs font-bold whitespace-nowrap transition active';
+  renderMenu();
+});
+
+function renderMenu() {
+  const filtered = activeCategory === 'all' ? menuItems : menuItems.filter(m => m.category === activeCategory);
+  const grid = document.getElementById('menuGrid');
+  if (!filtered.length) { grid.innerHTML = `<p class="col-span-2 text-center text-slate-500 text-xs py-10">لا توجد أطباق في هذا التصنيف.</p>`; return; }
+  grid.innerHTML = filtered.map(item => `
+    <div class="dish-card card overflow-hidden flex flex-col ${!item.is_available ? 'opacity-40' : ''}">
+      <div class="relative">
+        <img src="${item.image}" class="h-40 w-full object-cover" loading="lazy">
+        <span class="absolute top-2.5 left-2.5 price-tag text-amber-300 font-mono font-extrabold text-xs px-2.5 py-1">${formatDA(item.price)}</span>
+      </div>
+      <div class="p-4 flex flex-col gap-2 flex-1">
+        <h4 class="font-bold text-sm text-white">${item.name}</h4>
+        <p class="text-[11px] text-slate-400 leading-relaxed line-clamp-2">${item.description || ''}</p>
+        <div class="mt-auto pt-2">
+          <button ${!item.is_available ? 'disabled' : ''} data-id="${item.id}" class="add-btn w-full py-2 bg-gradient-to-l from-amber-500 to-orange-600 hover:brightness-110 disabled:opacity-40 disabled:grayscale text-slate-950 font-extrabold text-[11px] rounded-xl transition">${item.is_available ? '➕ أضف للسلة' : 'غير متاح حالياً'}</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+document.getElementById('menuGrid').addEventListener('click', (e) => {
+  const btn = e.target.closest('.add-btn');
+  if (!btn) return;
+  const item = menuItems.find(m => m.id === btn.dataset.id);
+  openAddonModal(item);
+});
+
+function openAddonModal(item) {
+  pendingAddonItem = item;
+  pendingAddonSelection = [];
+  document.getElementById('modalItemName').textContent = item.name;
+  document.getElementById('modalItemPrice').textContent = formatDA(item.price);
+  document.getElementById('modalNotes').value = '';
+  renderModalAddons();
+  document.getElementById('addonModal').classList.remove('hidden');
+  document.getElementById('addonModal').classList.add('flex');
+}
+
+function renderModalAddons() {
+  const addons = pendingAddonItem.custom_addons || [];
+  const list = document.getElementById('modalAddonsList');
+  if (!addons.length) { list.innerHTML = `<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-xl">لا توجد إضافات لهذا الطبق.</div>`; return; }
+  list.innerHTML = addons.map(a => {
+    const checked = pendingAddonSelection.some(s => s.addonId === a.id);
+    return `<div data-addon-id="${a.id}" class="addon-row p-3 rounded-xl border cursor-pointer flex items-center justify-between transition ${checked ? 'bg-amber-600/20 border-amber-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-400'}">
+      <span class="text-xs font-bold">${checked ? '✅' : '⬜'} ${a.name}</span>
+      <span class="text-xs font-mono font-bold text-amber-400">+${formatDA(a.price)}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('modalAddonsList').addEventListener('click', (e) => {
+  const row = e.target.closest('.addon-row');
+  if (!row) return;
+  const id = row.dataset.addonId;
+  const addon = pendingAddonItem.custom_addons.find(a => a.id === id);
+  const exists = pendingAddonSelection.some(s => s.addonId === id);
+  pendingAddonSelection = exists ? pendingAddonSelection.filter(s => s.addonId !== id) : [...pendingAddonSelection, { addonId: id, name: addon.name, price: addon.price }];
+  renderModalAddons();
+});
+
+document.getElementById('modalCloseBtn').onclick = () => closeModal();
+function closeModal() {
+  document.getElementById('addonModal').classList.add('hidden');
+  document.getElementById('addonModal').classList.remove('flex');
+}
+
+document.getElementById('modalConfirmBtn').onclick = () => {
+  const notes = document.getElementById('modalNotes').value.trim();
+  cart.push({ item: pendingAddonItem, quantity: 1, notes, selectedAddons: pendingAddonSelection });
+  renderCart();
+  closeModal();
+  showToast('تمت إضافة الطبق للسلة', 'success');
+};
+
+function renderCart() {
+  const box = document.getElementById('cartItems');
+  const form = document.getElementById('orderForm');
+  const emptyMsg = document.getElementById('emptyCartMsg');
+  document.getElementById('cartCount').textContent = cart.length ? `(${cart.length})` : '';
+
+  if (!cart.length) { box.innerHTML = ''; form.classList.add('hidden'); emptyMsg.classList.remove('hidden'); return; }
+  emptyMsg.classList.add('hidden'); form.classList.remove('hidden');
+
+  box.innerHTML = cart.map((ci, idx) => {
+    const addonsTotal = ci.selectedAddons.reduce((s, a) => s + a.price, 0);
+    const lineTotal = (ci.item.price + addonsTotal) * ci.quantity;
+    return `<div class="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
+      <div class="flex justify-between items-center">
+        <span class="text-xs font-bold text-white">${ci.item.name}</span>
+        <button data-idx="${idx}" class="remove-btn text-rose-400 text-[11px]">حذف</button>
+      </div>
+      <div class="flex justify-between items-center">
+        <span class="font-mono text-amber-400 text-xs">${formatDA(lineTotal)}</span>
+        <div class="flex items-center gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800">
+          <button data-idx="${idx}" data-d="-1" class="qty-btn px-1.5 text-slate-400">−</button>
+          <span class="font-mono text-xs text-white">${ci.quantity}</span>
+          <button data-idx="${idx}" data-d="1" class="qty-btn px-1.5 text-slate-400">+</button>
+        </div>
+      </div>
+      ${ci.selectedAddons.length ? `<div class="text-[10px] text-amber-300 space-y-0.5">${ci.selectedAddons.map(a => `<div>+ ${a.name}</div>`).join('')}</div>` : ''}
+      ${ci.notes ? `<div class="text-[10px] text-slate-500 italic">ملاحظة: ${ci.notes}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const total = cart.reduce((s, ci) => s + (ci.item.price + ci.selectedAddons.reduce((x, a) => x + a.price, 0)) * ci.quantity, 0);
+  document.getElementById('cartTotal').textContent = formatDA(total);
+}
+
+document.getElementById('cartItems').addEventListener('click', (e) => {
+  const rm = e.target.closest('.remove-btn');
+  if (rm) { cart.splice(+rm.dataset.idx, 1); renderCart(); return; }
+  const qb = e.target.closest('.qty-btn');
+  if (qb) {
+    const idx = +qb.dataset.idx, d = +qb.dataset.d;
+    cart[idx].quantity = Math.max(1, cart[idx].quantity + d);
+    renderCart();
+  }
+});
+
+// ---------------- إجراءات الأمان (GPS / واي فاي) قبل أي مسح ----------------
+async function checkSecurityRequirements(settingsRow) {
+  const statusEl = document.getElementById('securityGateStatus');
+  const checks = [];
+
+  if (settingsRow.enable_gps_check) {
+    statusEl.innerHTML = `<div class="spinner mx-auto"></div><p class="text-center mt-2 text-slate-400">جاري التحقق من تفعيل خدمة الموقع (GPS)...</p>`;
+    document.getElementById('securityGateCard').style.display = 'block';
+    const gpsOk = await new Promise((resolve) => {
+      if (!navigator.geolocation) { resolve(false); return; }
+      navigator.geolocation.getCurrentPosition(() => resolve(true), () => resolve(false), { timeout: 8000 });
+    });
+    checks.push({ label: 'خدمة الموقع (GPS)', ok: gpsOk });
+    if (!gpsOk) {
+      statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">📍 يجب تفعيل خدمة الموقع (GPS) والسماح للموقع بالوصول إليها للمتابعة داخل المطعم.</div>`;
+      return false;
+    }
+  }
+
+  if (settingsRow.enable_wifi_check) {
+    const conn = navigator.connection || navigator.webkitConnection || navigator.mozConnection;
+    if (conn && conn.type) {
+      const wifiOk = conn.type === 'wifi';
+      checks.push({ label: 'اتصال واي فاي', ok: wifiOk });
+      if (!wifiOk) {
+        statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">📶 يجب الاتصال بشبكة واي فاي المطعم للمتابعة.</div>`;
+        return false;
+      }
+    }
+    // ملاحظة: أغلب المتصفحات لا تتيح التحقق الدقيق من اسم شبكة الواي فاي لأسباب خصوصية - هذا فحص أفضل جهد متاح تقنياً
+  }
+
+  document.getElementById('securityGateCard').style.display = 'none';
+  return true;
+}
+
+// ---------------- الكود اليدوي (بديل كامل عن QR/GPS/WiFi) - دخول ثانٍ اختياري دائماً متاح للزبون ----------------
+function revealManualCode() {
+  document.getElementById('manualCodeCard').style.display = 'block';
+}
+const showManualCodeBtn = document.getElementById('showManualCodeBtn');
+if (showManualCodeBtn) showManualCodeBtn.onclick = revealManualCode;
+
+function enterOrderingArea(data) {
+  activeSession = data.session;
+  document.getElementById('manualCodeCard').style.display = 'none';
+  document.getElementById('orderingArea').style.display = 'block';
+  loadActiveOrders();
+}
+
+// 🆕 إصلاح "طلب جلسة سابقة يظهر لزبون جديد على نفس الطاولة": يضمن أن activeSession دائماً
+// يشير للجلسة الحقيقية النشطة حالياً (من جدول table_sessions) بدل الاعتماد فقط على متغيّر JS
+// قد يُفقد (تحديث الصفحة، أو دخول عبر شاشة التسجيل التي لا تُرجع معرّف الجلسة مباشرة).
+async function resolveActiveSession() {
+  if (activeSession && activeSession.id) return activeSession;
+  if (!selectedTableNumber) return null;
+  const { data } = await supabaseClient.from('table_sessions').select('*')
+    .eq('table_number', selectedTableNumber).eq('status', 'ACTIVE')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle();
+  activeSession = data || null;
+  return activeSession;
+}
+
+// المسار الأساسي: الكود الخاص بالطاولة وحده - النظام يبحث عن الطاولة عبر الكود نفسه (بدون رقم طاولة)
+document.getElementById('manualCodeBtn').onclick = async () => {
+  const code = document.getElementById('manualCodeInput').value.trim();
+  const statusEl = document.getElementById('manualCodeStatus');
+  if (!code) { statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">أدخل الكود</div>`; return; }
+  statusEl.innerHTML = `<div class="spinner mx-auto"></div>`;
+
+  const { data, error } = await supabaseClient.rpc('verify_table_manual_code_lookup_secure', {
+    p_code: code, p_device_id: deviceId, p_device_info: deviceInfo
+  });
+  if (error) console.error('verify_table_manual_code_lookup_secure', error);
+  if (error || !data || !data.isValid) { statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">${friendlyRpcError(error) || (data && data.message) || 'الكود غير صحيح أو تعذر التحقق حالياً'}</div>`; return; }
+
+  selectedTableNumber = data.table_number;
+  statusEl.innerHTML = `<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300">${data.message}</div>`;
+  enterOrderingArea(data);
+};
+
+// مسار احتياطي: الكود العام للمطعم (نفسه لكل الطاولات) - هنا فقط يلزم رقم الطاولة لأن الكود نفسه لا يحدد طاولة بعينها
+document.getElementById('showGeneralCodeBtn').onclick = () => {
+  document.getElementById('generalCodeWrap').style.display = 'grid';
+};
+
+document.getElementById('generalCodeBtn').onclick = async () => {
+  const code = document.getElementById('generalCodeInput').value.trim();
+  const statusEl = document.getElementById('manualCodeStatus');
+  const tableNumber = +document.getElementById('generalCodeTableNumber').value;
+  if (!tableNumber) { statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">أدخل رقم الطاولة</div>`; return; }
+  if (!code) { statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">أدخل الكود العام</div>`; return; }
+  statusEl.innerHTML = `<div class="spinner mx-auto"></div>`;
+
+  const { data, error } = await supabaseClient.rpc('verify_customer_manual_code_table_secure', {
+    p_code: code, p_table_number: tableNumber, p_device_id: deviceId, p_device_info: deviceInfo
+  });
+  if (error) console.error('verify_customer_manual_code_table_secure', error);
+  if (error || !data || !data.isValid) { statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">${friendlyRpcError(error) || (data && data.message) || 'الكود غير صحيح أو تعذر التحقق حالياً'}</div>`; return; }
+
+  selectedTableNumber = tableNumber;
+  statusEl.innerHTML = `<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300">${data.message}</div>`;
+  enterOrderingArea(data);
+};
+
+// ---------------- وضع (أ): جلسة الطاولة عبر QR ----------------
+async function loadTables() {
+  tables = await fetchAll('tables', 'number');
+  const params = new URLSearchParams(location.search);
+  const urlTable = params.get('table'), urlToken = params.get('token');
+
+  if (params.get('staffSession') === '1' && urlTable) {
+    selectedTableNumber = +urlTable;
+    document.getElementById('qrSessionCard').style.display = 'none';
+    document.getElementById('orderingArea').style.display = 'block';
+    // 🆕 إصلاح: يجب معرفة معرّف الجلسة الفعلي (session_id) المفتوح من شاشة التسجيل، وإلا
+    // ستُخلط طلبات هذه الجلسة بطلبات جلسات سابقة على نفس رقم الطاولة (أو تُفقد بينها).
+    await resolveActiveSession();
+    loadActiveOrders();
+    return;
+  }
+
+  if (urlTable) document.getElementById('manualTableNumber').value = urlTable;
+  if (urlToken) document.getElementById('manualTableToken').value = urlToken;
+  if (urlTable && urlToken) await handleTableVerify();
+}
+
+document.getElementById('verifyBtn').onclick = handleTableVerify;
+
+async function handleTableVerify() {
+  const settingsRow = (await supabaseClient.from('settings').select('*').eq('id', 1).single()).data;
+  const secOk = await checkSecurityRequirements(settingsRow);
+  if (!secOk) return;
+
+  selectedTableNumber = +document.getElementById('manualTableNumber').value;
+  const token = document.getElementById('manualTableToken').value.trim();
+  if (!selectedTableNumber || !token) { showToast('يرجى إدخال رقم الطاولة والكود السري', 'error'); return; }
+  await verifyTable(token);
+}
+
+// 🆕 محاولة الحصول على موقع الجهاز الجغرافي (GPS) - يُستخدم فقط في مسار مسح QR للتحقق من قرب
+// الزبون الفعلي من المطعم (إن كان مفعّلاً من الإدمن). لا يمنع المتابعة إن رفض الزبون الإذن أو تعذّر
+// تحديد الموقع - يُرسل ببساطة null، والخادم وحده يقرر ما إذا كان GPS إلزامياً أم لا.
+function getBrowserLocation(timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { clearTimeout(timer); resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }); },
+      () => { clearTimeout(timer); resolve(null); },
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 60000 }
+    );
+  });
+}
+
+async function verifyTable(token) {
+  const table = tables.find(t => t.number === selectedTableNumber);
+  const statusEl = document.getElementById('qrStatus');
+  statusEl.innerHTML = `<div class="spinner mx-auto"></div><div class="text-center text-[10px] text-slate-500 mt-1">جارٍ التحقق من موقعك...</div>`;
+
+  const loc = await getBrowserLocation();
+
+  // التحقق الفعلي يتم الآن بالكامل على الخادم (RPC) — لا يمكن تجاوزه من المتصفح
+  const { data, error } = await supabaseClient.rpc('scan_table_qr_secure', {
+    p_table_number: selectedTableNumber, p_scanned_token: token,
+    p_device_id: deviceId, p_device_info: deviceInfo, p_timeout_minutes: 60,
+    p_lat: loc ? loc.lat : null, p_lng: loc ? loc.lng : null
+  });
+
+  if (error) {
+    console.error('scan_table_qr_secure', error);
+    statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">${friendlyRpcError(error) || 'تعذر التحقق حالياً، أعد المحاولة'}</div>`;
+    activeSession = null;
+    return;
+  }
+
+  const result = data;
+  if (!result.isValid) {
+    const hint = (result.status === 'GPS_REQUIRED' || result.status === 'GPS_OUT_OF_RANGE')
+      ? `<div class="mt-2 text-[10px] text-slate-400">💡 يمكنك بدلاً من ذلك استخدام الكود اليدوي المكتوب على بطاقة الطاولة (زر "الدخول بالكود اليدوي" بالأسفل).</div>` : '';
+    statusEl.innerHTML = `<div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">${result.message}${hint}</div>`;
+    activeSession = null;
+    return;
+  }
+
+  activeSession = result.session;
+  statusEl.innerHTML = `<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs">${result.message}</div>`;
+  document.getElementById('orderingArea').style.display = 'block';
+  loadActiveOrders();
+}
+
+// ---------------- Place Order ----------------
+let pendingSubmitFn = null; // الدالة المنتظرة تنفيذها بعد "تأكيد نهائي" في نافذة التأكيد
+let lastReceiptText = ''; // نص آخر وصل جاهز للحفظ على الجهاز
+
+document.getElementById('orderForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (!cart.length) return;
+  pendingSubmitFn = submitTableOrder;
+  document.getElementById('confirmOrderModal').style.display = 'flex';
+});
+
+document.getElementById('cancelConfirmOrderBtn').onclick = () => {
+  document.getElementById('confirmOrderModal').style.display = 'none';
+  pendingSubmitFn = null; // تراجع - لا شيء يُرسل، يبقى الطلب قابلاً للتعديل
+};
+
+document.getElementById('finalConfirmOrderBtn').onclick = async () => {
+  document.getElementById('confirmOrderModal').style.display = 'none';
+  const fn = pendingSubmitFn; pendingSubmitFn = null;
+  if (fn) await fn();
+};
+
+// نص وصل بسيط يمكن حفظه على جهاز الزبون (بدون أي مكتبات خارجية)
+function buildReceiptText({ title, number, extraLine, items, total, customerName }) {
+  const lines = ['========================================', title, '========================================',
+    `الرقم التعريفي: #${number}`];
+  if (extraLine) lines.push(extraLine);
+  if (customerName) lines.push(`الاسم: ${customerName}`);
+  lines.push(`التاريخ: ${new Date().toLocaleString('ar-DZ')}`, '----------------------------------------');
+  items.forEach(ci => {
+    const addonsTotal = (ci.selectedAddons || []).reduce((s, a) => s + a.price, 0);
+    const addonsTxt = ci.selectedAddons && ci.selectedAddons.length ? ' + ' + ci.selectedAddons.map(a => a.name).join('، ') : '';
+    lines.push(`${ci.quantity} × ${ci.item.name}${addonsTxt} — ${formatDA((ci.item.price + addonsTotal) * ci.quantity)}`);
+  });
+  lines.push('----------------------------------------', `الإجمالي: ${formatDA(total)}`, '========================================');
+  return lines.join('\n');
+}
+
+function downloadReceipt(filename) {
+  const blob = new Blob([lastReceiptText], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('downloadTableReceiptBtn').onclick = () => downloadReceipt(`وصل-طلب-${document.getElementById('tableOrderNumberDisplay').textContent.replace('#','')}.txt`);
+document.getElementById('continueOrderingBtn').onclick = () => { document.getElementById('tableOrderReceiptBox').style.display = 'none'; };
+
+async function submitTableOrder() {
+  const table = tables.find(t => t.number === selectedTableNumber);
+  const total = cart.reduce((s, ci) => s + (ci.item.price + ci.selectedAddons.reduce((x, a) => x + a.price, 0)) * ci.quantity, 0);
+  const currentSettings = (await supabaseClient.from('settings').select('payment_policy').eq('id', 1).single()).data;
+
+  const nextOrderNumber = await getNextDailyNumber('orders', 'order_number');
+
+  const orderItems = cart.map(ci => ({
+    id: genId('oi'), menuItemId: ci.item.id, name: ci.item.name, price: ci.item.price,
+    quantity: ci.quantity, notes: ci.notes, selectedAddons: ci.selectedAddons, kitchenStatus: 'QUEUED'
+  }));
+
+  // 🆕 إصلاح: نتأكد دوماً من معرّف الجلسة الفعلي النشط قبل الحفظ - يمنع اختلاط طلبات
+  // هذه الجلسة بجلسات سابقة/لاحقة على نفس رقم الطاولة (كان يتولد معرّف عشوائي مختلف
+  // في كل مرة عند الدخول عبر شاشة التسجيل، فلا تتطابق الطلبات مع بعضها لاحقاً).
+  const session = await resolveActiveSession();
+
+  const customerName = `طاولة ${selectedTableNumber}`;
+  const newOrder = {
+    order_number: nextOrderNumber,
+    session_id: session && session.id ? session.id : genId('sess'),
+    device_id: deviceId,
+    dining_type: 'DINE_IN',
+    operating_mode: 'ORDER_FROM_TABLE',
+    payment_policy: (currentSettings && currentSettings.payment_policy) || 'KITCHEN_FIRST',
+    table_number: selectedTableNumber,
+    hall_name: table ? table.hall_name : null,
+    customer_name: customerName,
+    items: orderItems,
+    total_amount: total,
+    status: 'SUBMITTED',
+    payment_status: 'UNPAID'
+  };
+
+  const saved = await insertRow('orders', newOrder);
+  if (!saved) return;
+
+  await addAuditLog('ORDER_PLACED', 'CUSTOMER', `طلب جديد #${nextOrderNumber} من طاولة ${selectedTableNumber} بقيمة ${total} د.ج`);
+  await addNotification('طلب جديد 🍽️', `طلب #${nextOrderNumber} من طاولة ${selectedTableNumber}`, 'KITCHEN', 'HIGH');
+
+  lastReceiptText = buildReceiptText({
+    title: 'وصل طلب - الطلب من الطاولة', number: nextOrderNumber,
+    extraLine: `الطاولة رقم: ${selectedTableNumber}`, items: cart, total, customerName
+  });
+  document.getElementById('tableOrderNumberDisplay').textContent = `#${nextOrderNumber}`;
+  document.getElementById('tableOrderReceiptTotal').textContent = `المبلغ: ${formatDA(total)}`;
+  document.getElementById('tableReceiptPreview').textContent = lastReceiptText;
+  document.getElementById('tableOrderReceiptBox').style.display = 'block';
+
+  showToast('تم إرسال طلبك بنجاح للمطبخ! 🔥', 'success');
+  cart = [];
+  renderCart();
+  loadActiveOrders();
+}
+
+
+// ---------------- Active orders tracker ----------------
+let editingOrderId = null; // معرّف طلب الزبون الحالي الجاري تعديله (إن وجد)
+let editingOrderItems = null;
+
+async function loadActiveOrders() {
+  if (!selectedTableNumber) return;
+  const session = await resolveActiveSession();
+  const box = document.getElementById('activeOrdersBox');
+  const list = document.getElementById('activeOrdersList');
+
+  // 🆕 إصلاح: لا تُعرض إلا طلبات الجلسة الحالية فقط - طلبات أي جلسة سابقة على نفس رقم
+  // الطاولة (زبون سابق) لا تظهر هنا إطلاقاً؛ تبقى مؤرشفة ومتاحة فقط لمراقب القاعة.
+  let query = supabaseClient.from('orders').select('*')
+    .eq('table_number', selectedTableNumber)
+    .not('status', 'in', '(COMPLETED,CANCELLED)')
+    .order('created_at', { ascending: false });
+  if (session && session.id) query = query.eq('session_id', session.id);
+  const { data } = await query;
+
+  if (!data || !data.length) { box.style.display = 'none'; editingOrderId = null; return; }
+  box.style.display = 'block';
+  list.innerHTML = data.map(o => {
+    // الزبون يمكنه تعديل أو إلغاء طلبه بنفسه طالما لم يُرسَل بعد فعلياً للمطبخ
+    const editable = o.status === 'SUBMITTED' || o.status === 'PAID';
+    if (editingOrderId === o.id) return renderEditableOrderCard(o);
+    return `
+    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1.5">
+      <div class="flex justify-between items-center"><span class="font-bold text-white">طلب #${o.order_number}</span><span class="px-2 py-0.5 bg-amber-500/20 text-amber-300 font-mono rounded text-[10px]">${ORDER_STATUS_LABELS_CUSTOMER[o.status] || o.status}</span></div>
+      ${o.items.map(i => `<div class="flex justify-between text-slate-400"><span>${i.quantity}x ${i.name}</span><span class="text-emerald-400 font-mono">${i.kitchenStatus}</span></div>`).join('')}
+      ${editable ? `<div class="flex gap-2 pt-1.5 border-t border-slate-900">
+        <button data-order-id="${o.id}" class="edit-order-btn flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold rounded-lg">✏️ تعديل الطلب</button>
+        <button data-order-id="${o.id}" class="cancel-order-btn flex-1 py-1.5 bg-rose-900/60 hover:bg-rose-800 text-rose-200 font-bold rounded-lg">❌ إلغاء الطلب</button>
+      </div>` : `<div class="text-[10px] text-slate-500 pt-1 border-t border-slate-900">🔒 لم يعد بالإمكان تعديل هذا الطلب - أُرسل بالفعل للمطبخ. يمكنك إضافة طلب جديد من القائمة أعلاه.</div>`}
+    </div>
+  `;
+  }).join('');
+
+  list.querySelectorAll('.edit-order-btn').forEach(b => b.onclick = () => {
+    const order = data.find(o => o.id === b.dataset.orderId);
+    editingOrderId = order.id;
+    editingOrderItems = (order.items || []).map(i => ({ ...i }));
+    loadActiveOrders();
+  });
+  list.querySelectorAll('.cancel-order-btn').forEach(b => b.onclick = () => cancelMyOrder(b.dataset.orderId));
+}
+
+// عرض بطاقة الطلب في وضع التعديل: تغيير الكمية أو حذف صنف، ثم حفظ أو إلغاء التعديل
+const ORDER_STATUS_LABELS_CUSTOMER = { SUBMITTED: 'بانتظار التأكيد', PAID: 'تم الدفع' };
+
+function renderEditableOrderCard(o) {
+  const total = editingOrderItems.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0);
+  return `
+    <div class="bg-slate-950 p-3 rounded-xl border border-amber-500/40 text-xs space-y-2">
+      <div class="flex justify-between items-center"><span class="font-bold text-white">✏️ تعديل الطلب #${o.order_number}</span></div>
+      ${editingOrderItems.length ? editingOrderItems.map((i, idx) => `
+        <div class="flex items-center gap-2 bg-slate-900/60 rounded-lg p-1.5">
+          <span class="flex-1 text-slate-200">${i.name}</span>
+          <button data-idx="${idx}" data-d="-1" class="edit-qty-btn w-6 h-6 bg-slate-800 hover:bg-slate-700 rounded text-white font-bold">-</button>
+          <span class="w-5 text-center text-white">${i.quantity}</span>
+          <button data-idx="${idx}" data-d="1" class="edit-qty-btn w-6 h-6 bg-slate-800 hover:bg-slate-700 rounded text-white font-bold">+</button>
+          <button data-idx="${idx}" class="edit-remove-btn w-6 h-6 bg-rose-900/60 hover:bg-rose-800 rounded text-rose-200 font-bold">🗑</button>
+        </div>`).join('') : `<div class="text-center py-2 text-slate-500">لم يتبقَّ أي صنف - سيُلغى الطلب بالحفظ</div>`}
+      <div class="flex justify-between items-center pt-1.5 border-t border-slate-900">
+        <span class="font-bold text-amber-400">الإجمالي: ${formatDA(total)}</span>
+        <div class="flex gap-2">
+          <button id="cancelEditOrderBtn" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg">تراجع</button>
+          <button id="saveEditOrderBtn" data-order-id="${o.id}" class="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg">💾 حفظ</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.addEventListener('click', (e) => {
+  const qtyBtn = e.target.closest('.edit-qty-btn');
+  if (qtyBtn) {
+    const idx = +qtyBtn.dataset.idx, d = +qtyBtn.dataset.d;
+    editingOrderItems[idx].quantity = Math.max(1, editingOrderItems[idx].quantity + d);
+    loadActiveOrders();
+    return;
+  }
+  const rmBtn = e.target.closest('.edit-remove-btn');
+  if (rmBtn) { editingOrderItems.splice(+rmBtn.dataset.idx, 1); loadActiveOrders(); return; }
+  if (e.target.id === 'cancelEditOrderBtn') { editingOrderId = null; editingOrderItems = null; loadActiveOrders(); return; }
+  if (e.target.id === 'saveEditOrderBtn') { saveEditedOrder(e.target.dataset.orderId); return; }
+});
+
+async function saveEditedOrder(orderId) {
+  if (!editingOrderItems.length) { await cancelMyOrder(orderId, true); return; }
+  const newTotal = editingOrderItems.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0);
+  const saved = await updateRow('orders', 'id', orderId, { items: editingOrderItems, total_amount: newTotal, updated_at: new Date().toISOString() });
+  if (!saved || !saved.length) { showToast('تعذر حفظ التعديل، حاول مجدداً', 'error'); return; }
+  await addAuditLog('ORDER_EDITED', 'CUSTOMER', `الزبون عدّل طلبه #${orderId} - الإجمالي الجديد ${newTotal}`);
+  showToast('تم تحديث طلبك بنجاح', 'success');
+  editingOrderId = null; editingOrderItems = null;
+  loadActiveOrders();
+}
+
+// إلغاء طلب الزبون بنفسه (طالما لم يُرسَل للمطبخ بعد) - يمكنه بعدها الطلب من جديد بحرية من القائمة
+async function cancelMyOrder(orderId, skipConfirm = false) {
+  if (!skipConfirm && !confirm('إلغاء هذا الطلب؟ يمكنك تقديم طلب جديد من القائمة أعلاه في أي وقت.')) return;
+  const saved = await updateRow('orders', 'id', orderId, { status: 'CANCELLED', updated_at: new Date().toISOString() });
+  if (!saved || !saved.length) { showToast('تعذر إلغاء الطلب، حاول مجدداً', 'error'); return; }
+  await addAuditLog('ORDER_CANCELLED', 'CUSTOMER', `الزبون ألغى طلبه #${orderId}`);
+  showToast('تم إلغاء الطلب - يمكنك تقديم طلب جديد الآن', 'info');
+  editingOrderId = null; editingOrderItems = null;
+  loadActiveOrders();
+}
+
+document.getElementById('customerExitBtn').onclick = () => {
+  if (!confirm('هل تريد إنهاء عرض الطلب على هذا الجهاز؟ يمكنك العودة لاحقاً بمسح QR أو فتح الرابط من جديد.')) return;
+  document.getElementById('orderingArea').style.display = 'none';
+  document.getElementById('tableOrderReceiptBox').style.display = 'none';
+  document.getElementById('exitedScreen').style.display = 'block';
+};
+
+// ---------------- Init ----------------
+async function init() {
+  document.getElementById('qrSessionCard').style.display = 'block';
+  categories = await fetchAll('categories', 'sort_order');
+  renderCategoryTabs();
+  menuItems = await fetchAll('menu_items', 'category');
+  renderMenu();
+  await loadTables();
+  renderCart();
+  subscribeToTable('orders', () => loadActiveOrders());
+}
+init();
+</script>
+</body>
+</html>
