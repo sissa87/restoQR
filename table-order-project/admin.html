@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>الادمن </title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8 space-y-6">
+
+  <div class="card p-6 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+    <div>
+      <span class="px-2.5 py-0.5 bg-amber-500/20 text-amber-400 text-xs font-bold rounded-md border border-amber-500/30">لوحة تحكم المدير والإدارة الإستراتيجية</span>
+      <h2 class="text-xl font-bold text-white flex items-center gap-2 mt-1.5">🏢 خريطة الصالات الحية، أمان QR وإدارة المنيو والإعدادات</h2>
+    </div>
+    <div class="flex flex-wrap gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800" id="adminTabs">
+      <button data-tab="floorplan" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition bg-amber-600 text-white">خريطة </button>
+      <button data-tab="menu" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">menu</button>
+      <button data-tab="settings" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">الإعدادات</button>
+      <button data-tab="qrlogs" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">سجل QR</button>
+      <button data-tab="staff" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">👤 الموظفون</button>
+      <button data-tab="history" class="tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400">📜 سجل الطلبات</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="statsBox"></div>
+
+  <div id="tabContent"></div>
+</main>
+
+<!-- 🖨️ نافذة طباعة كود QR للطاولة -->
+<div id="qrPrintModal" class="fixed inset-0 z-[9998] bg-black/70 items-center justify-center p-4 flex-col gap-4" style="display:none">
+  <div class="bg-white text-slate-900 rounded-2xl p-8 max-w-xs w-full text-center space-y-3" id="qrPrintCard">
+    <h3 class="font-extrabold text-lg" id="qrPrintTitle">طاولة #</h3>
+    <div class="flex justify-center"><img id="qrPrintImg" src="" alt="QR" width="240" height="240" class="rounded-lg"></div>
+    <p class="text-[11px] text-slate-500">امسح الكود لبدء طلبك</p>
+    <p class="text-[10px] text-slate-400 font-mono" id="qrPrintManualCode"></p>
+  </div>
+  <div id="qrPrintWarning" class="no-print max-w-xs bg-amber-500/20 border border-amber-500/40 text-amber-200 text-[11px] rounded-xl p-3 text-center" style="display:none"></div>
+  <p class="no-print max-w-xs text-[10px] text-slate-300 font-mono break-all text-center" id="qrPrintLinkText"></p>
+  <div class="flex gap-2 no-print">
+    <button id="qrPrintNowBtn" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl">🖨️ طباعة</button>
+    <button id="qrPrintCloseBtn" class="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs rounded-xl">إغلاق</button>
+  </div>
+</div>
+<style>
+@media print {
+  body * { visibility: hidden; }
+  #qrPrintModal, #qrPrintModal * { visibility: visible; }
+  #qrPrintModal { position: fixed; inset: 0; background: white !important; display: flex !important; }
+  .no-print { display: none !important; }
+}
+</style>
+
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/qr-engine.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/auth-gate.js"></script>
+<script>
+requireStaffAuth('ADMIN', () => {
+renderNav('admin.html');
+renderFooter();
+
+let activeTab = 'floorplan';
+let tables = [], menuItems = [], categories = [], orders = [], qrLogs = [], profiles = [], halls = [], trustedDevices = [], settings = null;
+let editingItemId = null;
+let dishFormMode = null; // null | 'new' | 'edit'
+let dishEditingId = null;
+let hallFormMode = null; // null | 'new' (إدارة القاعات - إضافة)
+let addTableForHallId = null; // معرّف القاعة التي يظهر فيها نموذج "إضافة طاولة" حالياً
+let hallPasswordFormId = null; // معرّف القاعة التي يظهر فيها نموذج "كلمة مرور الشاشة" حالياً
+
+document.getElementById('adminTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn'); if (!btn) return;
+  activeTab = btn.dataset.tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.className = 'tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition text-slate-400');
+  btn.className = 'tab-btn px-3 py-1.5 rounded-xl text-xs font-bold transition bg-amber-600 text-white';
+  renderTab();
+});
+
+const TABLE_COLORS = {
+  AVAILABLE: 'bg-emerald-500/20 border-emerald-500 text-emerald-300',
+  OCCUPIED: 'bg-rose-500/20 border-rose-500 text-rose-300',
+  PAYMENT_PENDING: 'bg-amber-500/20 border-amber-500 text-amber-300',
+  RESERVED: 'bg-indigo-500/20 border-indigo-500 text-indigo-300',
+  DIRTY_CLEANING: 'bg-blue-500/20 border-blue-500 text-blue-300',
+  BLOCKED_MAINTENANCE: 'bg-slate-800 border-slate-700 text-slate-500'
+};
+const TABLE_LABELS = {
+  AVAILABLE: 'شاغرة وجاهزة', OCCUPIED: 'مشغولة (زبائن)', PAYMENT_PENDING: 'بانتظار المحاسبة',
+  RESERVED: 'محجوزة مسبقاً', DIRTY_CLEANING: 'قيد التنظيف', BLOCKED_MAINTENANCE: 'معطلة/صيانة'
+};
+
+function renderStats() {
+  // 🗑️ حُذفت بطاقات الإيرادات من هنا بناءً على طلبك (كانت غير دقيقة) - المبلغ الإجمالي الموثوق
+  // الآن يظهر فقط أعلى كل قائمة في تبويب "سجل الطلبات" (اليوم / السابقة / الأرشيف) حسب ما طلبت تحديداً
+  const occupied = tables.filter(t => t.status === 'OCCUPIED' || t.status === 'PAYMENT_PENDING').length;
+  const occupancyRate = tables.length ? Math.round((occupied / tables.length) * 100) : 0;
+  const activeOrders = orders.filter(o => !['COMPLETED', 'CANCELLED'].includes(o.status)).length;
+  const cards = [
+    { label: 'الطلبات النشطة الآن', value: activeOrders, icon: '📋', color: 'sky' },
+    { label: 'الطاولات المشغولة الآن', value: `${occupied} / ${tables.length}`, icon: '🪑', color: 'violet' },
+    { label: 'نسبة الإشغال', value: `${occupancyRate}%`, icon: '📊', color: 'amber' }
+  ];
+  document.getElementById('statsBox').innerHTML = cards.map(c => `
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-2"><span class="text-xl">${c.icon}</span><span class="text-[10px] text-${c.color}-400 font-bold">${c.label}</span></div>
+      <div class="text-xl font-extrabold text-white font-mono">${c.value}</div>
+    </div>`).join('');
+}
+
+function renderTab() {
+  const box = document.getElementById('tabContent');
+  if (activeTab === 'floorplan') box.innerHTML = floorplanHtml();
+  else if (activeTab === 'menu') box.innerHTML = menuAdminHtml();
+  else if (activeTab === 'settings') box.innerHTML = settingsHtml();
+  else if (activeTab === 'qrlogs') box.innerHTML = qrLogsHtml();
+  else if (activeTab === 'staff') box.innerHTML = staffHtml();
+  else if (activeTab === 'history') box.innerHTML = historyHtml();
+  attachTabEvents();
+}
+
+// ---------------- Floorplan (القاعات + الطاولات: إنشاء/تعديل/حذف) ----------------
+function floorplanHtml() {
+  return `<div class="space-y-6">
+    <div class="card p-5 flex items-center justify-between gap-3">
+      <h3 class="font-bold text-sm text-white">🏛️ القاعات (${halls.length})</h3>
+      <button id="newHallBtn" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[11px] rounded-lg transition">➕ إضافة قاعة جديدة</button>
+    </div>
+    ${hallFormMode === 'new' ? newHallFormHtml() : ''}
+    ${halls.map(h => hallSectionHtml(h)).join('')}
+    ${unassignedTablesHtml()}
+  </div>`;
+}
+
+function newHallFormHtml() {
+  return `<div class="card p-5 space-y-3">
+    <h4 class="font-bold text-sm text-white">قاعة جديدة</h4>
+    <input id="newHallName" placeholder="اسم القاعة *" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    <div class="flex gap-2">
+      <button id="saveHallBtn" class="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">➕ إنشاء القاعة</button>
+      <button id="cancelHallBtn" class="px-3 py-2 bg-slate-800 text-slate-300 font-bold text-xs rounded-lg">إلغاء</button>
+    </div>
+  </div>`;
+}
+
+function hallSectionHtml(h) {
+  const hallTables = tables.filter(t => t.hall_id === h.id);
+  return `<div class="card p-6 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+      <div>
+        <h4 class="font-bold text-sm text-amber-400">${h.name}</h4>
+        <div class="text-[10px] text-slate-500">${hallTables.length} طاولة</div>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button data-id="${h.id}" class="add-table-btn px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[10px] rounded-lg transition">➕ إضافة طاولة</button>
+        <button data-id="${h.id}" class="hall-pwd-btn px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-[10px] rounded-lg transition">🔑 كلمة مرور الشاشة</button>
+        <button data-id="${h.id}" class="regen-hall-qr-btn px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-[10px] rounded-lg transition">🔄 QR القاعة</button>
+        <button data-id="${h.id}" data-count="${hallTables.length}" class="delete-hall-btn px-2.5 py-1 bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-[10px] rounded-lg transition">🗑️ حذف القاعة</button>
+      </div>
+    </div>
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div class="bg-slate-950 p-2 rounded-xl border border-slate-800 font-mono text-amber-300 text-[9px] break-all"><span class="text-slate-400 block text-[8px]">QR Token القاعة:</span>${h.qr_security_token || '—'}</div>
+      <div class="bg-slate-950 p-2 rounded-xl border border-slate-800 font-mono text-sky-300 text-[9px] break-all"><span class="text-slate-400 block text-[8px]">الكود اليدوي للقاعة:</span>${h.manual_code || '—'}</div>
+    </div>
+    ${addTableForHallId === h.id ? addTableFormHtml(h) : ''}
+    ${hallPasswordFormId === h.id ? hallPasswordFormHtml(h) : ''}
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      ${hallTables.length ? hallTables.map(t => tableCardHtml(t)).join('') : `<div class="col-span-full text-center py-6 text-slate-500 text-xs">لا توجد طاولات في هذه القاعة بعد</div>`}
+    </div>
+  </div>`;
+}
+
+function addTableFormHtml(h) {
+  return `<div class="bg-slate-950 border border-amber-500/30 rounded-xl p-4 space-y-2">
+    <div class="grid grid-cols-2 gap-2">
+      <input id="newTableNumber" type="number" placeholder="رقم الطاولة *" class="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+      <input id="newTableCapacity" type="number" value="4" placeholder="السعة" class="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    </div>
+    <div class="flex gap-2">
+      <button data-id="${h.id}" class="save-table-btn flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">➕ إضافة الطاولة إلى "${h.name}"</button>
+      <button id="cancelTableBtn" class="px-3 py-2 bg-slate-800 text-slate-300 font-bold text-xs rounded-lg">إلغاء</button>
+    </div>
+  </div>`;
+}
+
+function hallPasswordFormHtml(h) {
+  return `<div class="bg-slate-950 border border-amber-500/30 rounded-xl p-4 space-y-2">
+    <input id="hallNewPassword" type="text" placeholder="كلمة مرور جديدة لشاشة قاعة ${h.name} (4 خانات على الأقل)" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" dir="ltr">
+    <div class="flex gap-2">
+      <button data-id="${h.id}" class="save-hall-pwd-btn flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">💾 حفظ كلمة المرور</button>
+      <button id="cancelHallPwdBtn" class="px-3 py-2 bg-slate-800 text-slate-300 font-bold text-xs rounded-lg">إلغاء</button>
+    </div>
+  </div>`;
+}
+
+function tableCardHtml(t) {
+  return `<div class="p-4 rounded-2xl border text-center space-y-2 ${TABLE_COLORS[t.status]}">
+    <div class="font-bold text-lg font-mono">طاولة #${t.number}</div>
+    <div class="text-[10px] font-bold">${TABLE_LABELS[t.status]}</div>
+    <div class="bg-slate-950/80 p-2 rounded-xl text-[9px] font-mono break-all text-amber-300 border border-slate-800">
+      <span class="text-slate-400 block text-[8px]">Secret Token:</span>${t.qr_security_token}
+    </div>
+    <div class="bg-slate-950/80 p-2 rounded-xl text-[9px] font-mono break-all text-sky-300 border border-slate-800">
+      <span class="text-slate-400 block text-[8px]">الكود اليدوي:</span>${t.manual_code || '—'}
+    </div>
+    <div class="space-y-1 pt-1">
+      <button data-id="${t.id}" class="regen-qr-btn w-full py-1 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-[10px] rounded-lg transition">🔄 توليد QR جديد</button>
+      <button data-id="${t.id}" data-number="${t.number}" data-token="${t.qr_security_token}" class="print-qr-btn w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[10px] rounded-lg transition">🖨️ طباعة QR الطاولة</button>
+      <button data-id="${t.id}" class="regen-code-btn w-full py-1 bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold text-[10px] rounded-lg transition">🔄 توليد كود يدوي جديد</button>
+      ${t.status === 'DIRTY_CLEANING' ? `<button data-id="${t.id}" data-status="AVAILABLE" class="table-status-btn w-full py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] rounded-lg transition">✅ تأكيد النظافة</button>` : ''}
+      ${t.status === 'AVAILABLE' ? `<button data-id="${t.id}" data-status="BLOCKED_MAINTENANCE" class="table-status-btn w-full py-1 bg-slate-700 hover:bg-slate-600 text-white font-bold text-[10px] rounded-lg transition">🔧 وضع صيانة</button>` : ''}
+      ${t.status === 'BLOCKED_MAINTENANCE' ? `<button data-id="${t.id}" data-status="AVAILABLE" class="table-status-btn w-full py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] rounded-lg transition">✅ إنهاء الصيانة</button>` : ''}
+      ${t.status === 'AVAILABLE' ? `<button data-id="${t.id}" data-number="${t.number}" class="delete-table-btn w-full py-1 bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-[10px] rounded-lg transition">🗑️ حذف الطاولة</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function unassignedTablesHtml() {
+  const orphan = tables.filter(t => !halls.some(h => h.id === t.hall_id));
+  if (!orphan.length) return '';
+  return `<div class="card p-6 space-y-3">
+    <h4 class="font-bold text-sm text-rose-400 border-b border-slate-800 pb-2">⚠️ طاولات بلا قاعة مسجّلة رسمياً (${orphan.length})</h4>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">${orphan.map(t => tableCardHtml(t)).join('')}</div>
+  </div>`;
+}
+
+async function createHall() {
+  const name = document.getElementById('newHallName').value.trim();
+  if (!name) { showToast('أدخل اسم القاعة', 'error'); return; }
+  const saved = await insertRow('halls', { id: genId('hall'), name });
+  if (!saved) return;
+  await addAuditLog('HALL_CREATED', 'ADMIN', `إنشاء قاعة جديدة: ${name}`);
+  showToast('تم إنشاء القاعة (تم توليد QR وكود يدوي لها تلقائياً)', 'success');
+  hallFormMode = null;
+  loadAll();
+}
+
+async function deleteHall(hallId, tableCount) {
+  if (tableCount > 0) { showToast('لا يمكن حذف قاعة تحتوي على طاولات - احذف أو انقل طاولاتها أولاً', 'error'); return; }
+  if (!confirm('هل أنت متأكد من حذف هذه القاعة نهائياً؟')) return;
+  const ok = await deleteRow('halls', 'id', hallId);
+  if (!ok) return;
+  await addAuditLog('HALL_DELETED', 'ADMIN', `حذف القاعة ${hallId}`);
+  showToast('تم حذف القاعة', 'success');
+  loadAll();
+}
+
+async function regenerateHallQR(hallId) {
+  const token = `QR-HALL-${hallId}-${Math.random().toString(36).substring(2, 18).toUpperCase()}`;
+  await updateRow('halls', 'id', hallId, { qr_security_token: token, token_created_at: new Date().toISOString() });
+  await addAuditLog('HALL_QR_REGENERATED', 'ADMIN', `تجديد رمز QR للقاعة ${hallId}`);
+  showToast('تم توليد رمز QR جديد للقاعة', 'success');
+  loadAll();
+}
+
+async function saveHallPassword(hallId) {
+  const pwd = document.getElementById('hallNewPassword').value;
+  if (!pwd || pwd.length < 4) { showToast('كلمة المرور قصيرة جداً (4 خانات على الأقل)', 'error'); return; }
+  const { data, error } = await supabaseClient.rpc('set_hall_screen_password_secure', { p_hall_id: hallId, p_new_password: pwd });
+  if (error) console.error('set_hall_screen_password_secure', error);
+  if (error || !data || !data.isValid) { showToast(friendlyRpcError(error) || (data && data.message) || 'تعذر حفظ كلمة المرور', 'error'); return; }
+  await addAuditLog('HALL_SCREEN_PASSWORD_UPDATED', 'ADMIN', `تحديث كلمة مرور شاشة القاعة ${hallId}`);
+  showToast('تم تحديث كلمة مرور شاشة القاعة', 'success');
+  hallPasswordFormId = null;
+  renderTab();
+}
+
+async function addTableToHall(hallId) {
+  const hall = halls.find(h => h.id === hallId);
+  const number = +document.getElementById('newTableNumber').value;
+  const capacity = +document.getElementById('newTableCapacity').value || 4;
+  if (!number) { showToast('أدخل رقم الطاولة', 'error'); return; }
+  if (tables.some(t => t.number === number)) { showToast('رقم الطاولة هذا مستخدم بالفعل', 'error'); return; }
+  const saved = await insertRow('tables', {
+    id: genId('tbl'), number, hall_id: hallId, hall_name: hall.name, capacity, status: 'AVAILABLE',
+    qr_security_token: generateRandomSecretToken(number),
+    manual_code: `TBL${number}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`
+  });
+  if (!saved) return;
+  await addAuditLog('TABLE_ADDED', 'ADMIN', `إضافة طاولة جديدة #${number} إلى قاعة ${hall.name}`);
+  showToast(`تمت إضافة الطاولة #${number}`, 'success');
+  addTableForHallId = null;
+  loadAll();
+}
+
+async function deleteTable(tableId, number) {
+  if (!confirm(`هل أنت متأكد من حذف الطاولة #${number} نهائياً؟`)) return;
+  const ok = await deleteRow('tables', 'id', tableId);
+  if (!ok) return;
+  await addAuditLog('TABLE_DELETED', 'ADMIN', `حذف الطاولة #${number}`);
+  showToast(`تم حذف الطاولة #${number}`, 'success');
+  loadAll();
+}
+
+async function regenerateTableQR(tableId) {
+  const table = tables.find(t => t.id === tableId);
+  const renewed = createNewTableToken(table);
+  await updateRow('tables', 'id', tableId, { qr_security_token: renewed.qr_security_token, token_created_at: renewed.token_created_at });
+  await addAuditLog('QR_REGENERATED', 'ADMIN', `تجديد رمز QR للطاولة #${table.number} يدوياً`);
+  showToast('تم توليد رمز QR جديد للطاولة', 'success');
+  loadAll();
+}
+
+// 🖨️ فتح نافذة طباعة كود QR الخاص بالطاولة - يُطبع رابط menu.html?table=N&token=TOKEN كصورة QR فعلية قابلة للمسح
+// (نعتمد صورة جاهزة من خدمة توليد QR خارجية - أبسط وأوثق من مكتبة JS قد تفشل بالتحميل صامتة)
+function openQrPrintModal(number, token) {
+  const table = tables.find(t => t.number === number);
+  // 🆕 نستخدم الرابط العام المحفوظ من الإعدادات إن وُجد (هذا ما يجعل الكود يعمل من أي هاتف آخر)،
+  // وإلا نرجع للرابط الحالي في المتصفح كحل احتياطي مع تنبيه صريح لضبطه من الإعدادات
+  let base = settings && settings.public_base_url;
+  if (!base) {
+    base = `${window.location.origin}${window.location.pathname.replace(/admin\.html$/, '')}`;
+  }
+  const url = `${base}menu.html?table=${number}&token=${encodeURIComponent(token)}`;
+  document.getElementById('qrPrintTitle').textContent = `طاولة #${number}`;
+  document.getElementById('qrPrintManualCode').textContent = table && table.manual_code ? `أو الكود اليدوي: ${table.manual_code}` : '';
+  document.getElementById('qrPrintImg').src = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data=${encodeURIComponent(url)}`;
+  const warnBox = document.getElementById('qrPrintWarning');
+  if (!settings || !settings.public_base_url) {
+    warnBox.innerHTML = `⚠️ لم تضبط "الرابط العام للموقع" من تبويب الإعدادات بعد - هذا الكود يستخدم مؤقتاً رابط متصفحك الحالي وقد لا يعمل من هاتف آخر. اضبطه من الإعدادات أولاً.`;
+    warnBox.style.display = 'block';
+  } else {
+    warnBox.style.display = 'none';
+  }
+  document.getElementById('qrPrintLinkText').textContent = url;
+  document.getElementById('qrPrintModal').style.display = 'flex';
+}
+
+async function regenerateTableManualCode(tableId) {
+  const table = tables.find(t => t.id === tableId);
+  const newCode = `TBL${table.number}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  await updateRow('tables', 'id', tableId, { manual_code: newCode });
+  await addAuditLog('TABLE_MANUAL_CODE_REGENERATED', 'ADMIN', `تجديد الكود اليدوي للطاولة #${table.number}`);
+  showToast('تم توليد كود يدوي جديد للطاولة', 'success');
+  loadAll();
+}
+
+async function changeTableStatus(tableId, nextStatus) {
+  const table = tables.find(t => t.id === tableId);
+  try { validateTableTransition(table.status, nextStatus); } catch (err) { showToast(err.message, 'error'); return; }
+  const patch = { status: nextStatus };
+  if (nextStatus === 'AVAILABLE') {
+    // 🆕 إنهاء أي جلسة (table_sessions) عالقة صراحة، وإلا تبقى الجلسة القديمة "ACTIVE" وتمنع دخول زبون جديد
+    Object.assign(patch, { current_order_id: null, current_session_id: null });
+    await supabaseClient.from('table_sessions').update({ status: 'EXPIRED', ended_at: new Date().toISOString() })
+      .eq('table_number', table.number).eq('status', 'ACTIVE');
+  }
+  await updateRow('tables', 'id', tableId, patch);
+  await addAuditLog('TABLE_STATUS_CHANGE', 'ADMIN', `تغيير حالة الطاولة #${table.number} إلى ${nextStatus}`);
+  loadAll();
+}
+
+// ---------------- Menu Admin ----------------
+function menuAdminHtml() {
+  return `<div class="grid lg:grid-cols-5 gap-6">
+    <div class="lg:col-span-3 card p-5 space-y-3 max-h-[70vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="font-bold text-sm text-white">🍽️ قائمة الأطباق (${menuItems.length})</h3>
+        <button id="newDishBtn" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[11px] rounded-lg transition">➕ إضافة طبق جديد</button>
+      </div>
+      ${menuItems.map(m => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <img src="${m.image}" class="w-12 h-12 rounded-lg object-cover">
+            <div>
+              <div class="text-xs font-bold text-white">${m.name}</div>
+              <div class="text-[10px] text-amber-400 font-mono">${formatDA(m.price)} - ${(categories.find(c => c.key === m.category) || {}).label || m.category}</div>
+              ${m.notes ? `<div class="text-[10px] text-slate-500 mt-0.5">📝 ${m.notes}</div>` : ''}
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button data-id="${m.id}" class="edit-dish-btn px-2.5 py-1 bg-slate-800 text-slate-300 text-[10px] font-bold rounded-lg">تعديل</button>
+            <button data-id="${m.id}" class="edit-item-btn px-2.5 py-1 bg-slate-800 text-slate-300 text-[10px] font-bold rounded-lg">إضافات</button>
+            <button data-id="${m.id}" data-avail="${m.is_available}" class="toggle-avail-btn px-2.5 py-1 ${m.is_available ? 'bg-emerald-600' : 'bg-rose-600'} text-white text-[10px] font-bold rounded-lg">${m.is_available ? 'متاح' : 'موقوف'}</button>
+            <button data-id="${m.id}" data-name="${m.name}" class="delete-dish-btn px-2.5 py-1 bg-rose-600/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold rounded-lg">🗑️</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="lg:col-span-2 card p-5 space-y-3" id="addonEditorBox">
+      ${dishFormMode ? dishFormHtml() : editingItemId ? addonEditorHtml() : `<div class="text-center py-16 text-slate-500 text-xs">اختر طبقاً للتعديل، أو أضف طبقاً جديداً</div>`}
+    </div>
+  </div>
+  <div class="card p-5 space-y-3 mt-6">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-2">🏷️ أصناف الأطباق (${categories.length})</h3>
+    <div class="flex flex-wrap gap-2">
+      ${categories.length ? categories.map(c => `
+        <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg pr-1 pl-2.5 py-1.5 text-xs">
+          <span class="text-white font-bold">${c.label}</span>
+          <span class="text-slate-500 font-mono text-[10px]">(${menuItems.filter(m => m.category === c.key).length})</span>
+          <button data-id="${c.id}" data-key="${c.key}" data-label="${c.label}" class="delete-category-btn w-5 h-5 flex items-center justify-center rounded bg-rose-600/20 text-rose-400 text-[11px] font-bold">✕</button>
+        </div>`).join('') : `<div class="text-xs text-slate-500 italic">لا توجد أصناف بعد</div>`}
+    </div>
+    <div class="flex gap-2 pt-2 border-t border-slate-800">
+      <input id="newCategoryLabel" placeholder="اسم الصنف الجديد (مثال: عصائر طازجة)" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+      <button id="addCategoryBtn" class="px-3 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg whitespace-nowrap">➕ إضافة صنف</button>
+    </div>
+    <p class="text-[10px] text-slate-500">لا يمكن حذف صنف يحتوي على أطباق - عدّل أطباقه لصنف آخر أو احذفها أولاً.</p>
+  </div>`;
+}
+
+function dishFormHtml() {
+  const item = dishFormMode === 'edit' ? menuItems.find(m => m.id === dishEditingId) : null;
+  return `
+    <h4 class="font-bold text-sm text-white border-b border-slate-800 pb-2">${dishFormMode === 'edit' ? `تعديل: ${item.name}` : 'إضافة طبق جديد'}</h4>
+    <input id="dishName" placeholder="اسم الطبق *" value="${item ? item.name : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    <select id="dishCategory" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+      ${categories.length
+        ? categories.map(c => `<option value="${c.key}" ${item && item.category === c.key ? 'selected' : ''}>${c.label}</option>`).join('')
+        : `<option value="">أضف صنفاً أولاً من الأسفل ⬇️</option>`}
+    </select>
+    <input id="dishPrice" type="number" placeholder="السعر (د.ج) *" value="${item ? item.price : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+    <div class="space-y-1.5">
+      <label class="text-[11px] text-slate-400 block">صورة الطبق</label>
+      <div class="flex items-center gap-2">
+        <img id="dishImagePreview" src="${item ? item.image : ''}" class="w-14 h-14 rounded-lg object-cover bg-slate-900 border border-slate-800 ${item && item.image ? '' : 'hidden'}">
+        <div class="flex-1 space-y-1.5">
+          <input id="dishImageFile" type="file" accept="image/*" class="w-full text-[11px] text-slate-400 file:ml-2 file:px-2.5 file:py-1.5 file:rounded-lg file:border-0 file:bg-amber-600 file:text-slate-950 file:font-bold file:text-[11px] file:cursor-pointer">
+          <input id="dishImage" placeholder="أو الصق رابط صورة من الويب" value="${item ? item.image : ''}" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" dir="ltr">
+        </div>
+      </div>
+      <p class="text-[10px] text-slate-500">اختر صورة من جهازك (تُرفع تلقائياً عند الحفظ)، أو الصق رابط جاهز - إن اخترت ملفاً فسيُستخدم بدل الرابط.</p>
+    </div>
+    <textarea id="dishDescription" placeholder="الوصف (يظهر للزبون)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white h-16">${item ? (item.description || '') : ''}</textarea>
+    <textarea id="dishNotes" placeholder="ملاحظات داخلية (للإدارة/المطبخ فقط، لا تظهر للزبون)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white h-14">${item ? (item.notes || '') : ''}</textarea>
+    <div class="flex gap-2">
+      <button id="saveDishBtn" class="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">${dishFormMode === 'edit' ? '💾 حفظ التعديلات' : '➕ إضافة الطبق'}</button>
+      <button id="cancelDishBtn" class="px-3 py-2 bg-slate-800 text-slate-300 font-bold text-xs rounded-lg">إلغاء</button>
+    </div>`;
+}
+
+async function uploadDishImage(file) {
+  if (file.size > 5 * 1024 * 1024) { showToast('الصورة كبيرة جداً - الحد الأقصى 5 ميغابايت', 'error'); return null; }
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const path = `dishes/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+  const { error } = await supabaseClient.storage.from('dish-images').upload(path, file, { upsert: false, cacheControl: '3600' });
+  if (error) { showToast('تعذّر رفع الصورة: ' + (error.message || 'خطأ غير معروف'), 'error'); return null; }
+  const { data } = supabaseClient.storage.from('dish-images').getPublicUrl(path);
+  return data.publicUrl;
+}
+
+async function saveDish() {
+  const name = document.getElementById('dishName').value.trim();
+  const category = document.getElementById('dishCategory').value;
+  const price = +document.getElementById('dishPrice').value || 0;
+  let image = document.getElementById('dishImage').value.trim();
+  const description = document.getElementById('dishDescription').value.trim();
+  const notes = document.getElementById('dishNotes').value.trim();
+  if (!name || !price) { showToast('يرجى إدخال اسم الطبق وسعره على الأقل', 'error'); return; }
+  if (!category) { showToast('أضف صنفاً واحداً على الأقل قبل إضافة طبق', 'error'); return; }
+
+  const fileInput = document.getElementById('dishImageFile');
+  const saveBtn = document.getElementById('saveDishBtn');
+  if (fileInput && fileInput.files && fileInput.files[0]) {
+    const originalLabel = saveBtn.textContent;
+    saveBtn.textContent = '⏳ جاري رفع الصورة...'; saveBtn.disabled = true;
+    const uploadedUrl = await uploadDishImage(fileInput.files[0]);
+    saveBtn.textContent = originalLabel; saveBtn.disabled = false;
+    if (!uploadedUrl) return; // فشل الرفع - لا نكمل الحفظ
+    image = uploadedUrl;
+  }
+
+  if (dishFormMode === 'edit') {
+    await updateRow('menu_items', 'id', dishEditingId, { name, category, price, image, description, notes });
+    await addAuditLog('DISH_UPDATED', 'ADMIN', `تعديل بيانات الطبق: ${name}`);
+    showToast('تم حفظ تعديلات الطبق', 'success');
+  } else {
+    await insertRow('menu_items', { id: genId('dish'), name, category, price, image, description, notes, is_available: true, custom_addons: [] });
+    await addAuditLog('DISH_ADDED', 'ADMIN', `إضافة طبق جديد: ${name}`);
+    showToast('تمت إضافة الطبق الجديد', 'success');
+  }
+  dishFormMode = null; dishEditingId = null;
+  loadAll();
+}
+
+async function deleteDish(id, name) {
+  if (!confirm(`حذف الطبق "${name}" نهائياً من المنيو؟ لا يمكن التراجع.`)) return;
+  const ok = await deleteRow('menu_items', 'id', id);
+  if (!ok) return;
+  await addAuditLog('DISH_DELETED', 'ADMIN', `حذف الطبق: ${name}`);
+  showToast('تم حذف الطبق', 'success');
+  if (dishEditingId === id) { dishFormMode = null; dishEditingId = null; }
+  if (editingItemId === id) editingItemId = null;
+  loadAll();
+}
+
+// ---------------- أصناف الأطباق (categories) ----------------
+async function addCategory() {
+  const label = document.getElementById('newCategoryLabel').value.trim();
+  if (!label) { showToast('أدخل اسم الصنف', 'error'); return; }
+  if (categories.some(c => c.label === label)) { showToast('يوجد صنف بنفس الاسم بالفعل', 'error'); return; }
+  const key = 'cat_' + Math.random().toString(36).substring(2, 10);
+  const sort_order = categories.length ? Math.max(...categories.map(c => c.sort_order)) + 1 : 1;
+  const { error } = await supabaseClient.from('categories').insert({ id: genId('cat'), key, label, sort_order });
+  if (error) { showToast(friendlyRpcError(error) || 'تعذّرت إضافة الصنف', 'error'); return; }
+  await addAuditLog('CATEGORY_ADDED', 'ADMIN', `إضافة صنف جديد: ${label}`);
+  showToast('تمت إضافة الصنف', 'success');
+  loadAll();
+}
+
+async function deleteCategory(id, key, label) {
+  const count = menuItems.filter(m => m.category === key).length;
+  if (count > 0) { showToast(`لا يمكن حذف "${label}" - يحتوي ${count} طبقاً، عدّل أطباقه لصنف آخر أو احذفها أولاً`, 'error'); return; }
+  if (!confirm(`حذف صنف "${label}"؟`)) return;
+  const ok = await deleteRow('categories', 'id', id);
+  if (!ok) return;
+  await addAuditLog('CATEGORY_DELETED', 'ADMIN', `حذف صنف: ${label}`);
+  showToast('تم حذف الصنف', 'success');
+  loadAll();
+}
+
+function addonEditorHtml() {
+  const item = menuItems.find(m => m.id === editingItemId);
+  if (!item) return '';
+  const addons = item.custom_addons || [];
+  return `
+    <h4 class="font-bold text-sm text-white border-b border-slate-800 pb-2">إضافات: ${item.name}</h4>
+    <div class="space-y-2 max-h-56 overflow-y-auto">
+      ${addons.length ? addons.map(a => `
+        <div class="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-slate-800 text-xs">
+          <span>${a.name} <span class="text-amber-400 font-mono">+${formatDA(a.price)}</span></span>
+          <button data-item="${item.id}" data-addon="${a.id}" class="remove-addon-btn text-rose-400 text-[10px]">حذف</button>
+        </div>`).join('') : `<div class="text-xs text-slate-500 italic">لا توجد إضافات بعد</div>`}
+    </div>
+    <div class="flex gap-2 pt-2 border-t border-slate-800">
+      <input id="newAddonName" placeholder="اسم الإضافة" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white">
+      <input id="newAddonPrice" type="number" value="100" class="w-20 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white">
+      <button id="addAddonBtn" class="px-3 py-1.5 bg-amber-600 text-slate-950 font-bold text-xs rounded-lg">➕</button>
+    </div>`;
+}
+
+async function toggleAvailability(id, current) {
+  await updateRow('menu_items', 'id', id, { is_available: !current });
+  loadAll();
+}
+
+async function addAddon(itemId) {
+  const name = document.getElementById('newAddonName').value.trim();
+  const price = +document.getElementById('newAddonPrice').value || 0;
+  if (!name) return;
+  const item = menuItems.find(m => m.id === itemId);
+  const updated = [...(item.custom_addons || []), { id: genId('ad'), name, price, isAvailable: true }];
+  await updateRow('menu_items', 'id', itemId, { custom_addons: updated });
+  await loadAll();
+}
+
+async function removeAddon(itemId, addonId) {
+  const item = menuItems.find(m => m.id === itemId);
+  const updated = (item.custom_addons || []).filter(a => a.id !== addonId);
+  await updateRow('menu_items', 'id', itemId, { custom_addons: updated });
+  await loadAll();
+}
+
+// ---------------- Settings ----------------
+function settingsHtml() {
+  const isQueueMode = false; // نسخة "الطلب من الطاولة" فقط - المود ثابت دائماً
+  const policies = [
+    { id: 'PAYMENT_FIRST', label: 'الدفع أولاً' },
+    { id: 'KITCHEN_FIRST', label: 'التحضير أولاً' },
+    { id: 'SIMULTANEOUS', label: 'متزامن (الاثنان معاً)' }
+  ];
+  return `<div class="card p-6 space-y-6">
+    <div class="bg-slate-950 border border-emerald-500/30 p-5 rounded-2xl space-y-2">
+      <h4 class="font-bold text-sm text-emerald-400">✅ نمط التشغيل: الطلب من الطاولة (ثابت)</h4>
+      <p class="text-[11px] text-slate-400">هذه نسخة مخصصة لنمط "الطلب من الطاولة" فقط + التسجيل عبر شاشة داخل المطعم (تبويب "شاشة التسجيل"). ترتيب الدفع والتحضير أدناه يبقى بيدك بالكامل.</p>
+    </div>
+    <div class="bg-slate-950 border border-sky-500/30 p-5 rounded-2xl space-y-2">
+      <h4 class="font-bold text-sm text-sky-400">🚪 دخول الزبون - طريقتان متاحتان معاً دائماً</h4>
+      <p class="text-[11px] text-slate-400">في صفحة القائمة، يرى الزبون دائماً زر الدخول العادي (QR + التحقيقات الأمنية أدناه)، وبجانبه رابط "الدخول المباشر بالكود اليدوي" الذي يفتح الجلسة مباشرة بالكود الذي تحدده أنت (من هذا التبويب لكود المطعم/الطاولات، ومن تبويب "خريطة الطاولات" لكود كل طاولة) - بدون أي تحقق GPS أو واي فاي. التحقيقات الأمنية المطبَّقة على طريقة QR فقط (GPS/واي فاي/الاثنان) تُضبط أسفل ⬇️</p>
+    </div>
+    <div class="bg-slate-950 border border-amber-500/30 p-5 rounded-2xl space-y-2">
+      <h4 class="font-bold text-sm text-amber-400">💵 الدفع: نقداً بالدينار الجزائري فقط</h4>
+      <p class="text-[11px] text-slate-400">شاشة القابض تعرض خيار الدفع النقدي فقط، مع فاتورة قابلة للطباعة لكل طلب.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="bg-slate-950 border border-slate-800 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-amber-400">ترتيب الدفع والتحضير (المسير يحدده)</h4>
+        <div class="grid grid-cols-3 gap-2">
+          ${policies.map(p => {
+            const isActive = settings.payment_policy === p.id;
+            return `<button data-policy="${p.id}" class="policy-btn p-2.5 rounded-xl border text-[11px] font-bold transition ${isActive ? 'bg-amber-600/20 border-amber-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400'}">${p.label}</button>`;
+          }).join('')}
+        </div>
+        <p class="text-[10px] text-slate-500">هذا الترتيب يُطبَّق على الطلبات الجديدة في كلا النمطين (الطاولة والطابور).</p>
+      </div>
+      <div class="bg-slate-950 border border-slate-800 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-amber-400">مدة انتهاء جلسة الطاولة (دقيقة)</h4>
+        <input id="sessionTimeoutInput" type="number" value="${settings.session_timeout_minutes}" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white">
+        <button id="saveTimeoutBtn" class="w-full py-2 bg-amber-600 text-slate-950 font-bold text-xs rounded-lg">حفظ</button>
+      </div>
+    </div>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="bg-slate-950 border border-slate-800 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-amber-400">إجراءات أمان جلسة الزبون (قبل مسح QR)</h4>
+        <label class="flex items-center justify-between text-xs text-slate-300"><span>يشترط تفعيل GPS</span>
+          <input id="gpsCheckToggle" type="checkbox" ${settings.enable_gps_check ? 'checked' : ''} class="w-4 h-4"></label>
+        <label class="flex items-center justify-between text-xs text-slate-300"><span>يشترط تفعيل واي فاي</span>
+          <input id="wifiCheckToggle" type="checkbox" ${settings.enable_wifi_check ? 'checked' : ''} class="w-4 h-4"></label>
+        <button id="saveSecurityChecksBtn" class="w-full py-2 bg-amber-600 text-slate-950 font-bold text-xs rounded-lg">حفظ</button>
+      </div>
+      <div class="bg-slate-950 border border-emerald-500/30 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-emerald-400">📍 موقع المطعم (GPS)</h4>
+        <p class="text-[11px] text-slate-400">سجّل إحداثيات المطعم الحقيقية هنا. إن فعّلت "يشترط تفعيل GPS" أعلاه، سيُرفض تلقائياً أي زبون يحاول مسح كود QR من خارج هذا النطاق (الكود اليدوي يبقى يعمل دائماً بدون هذا الشرط).</p>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-[10px] text-slate-500 block mb-1">خط العرض (Latitude)</label>
+            <input id="restaurantLat" type="number" step="any" value="${settings.restaurant_lat ?? ''}" placeholder="مثال: 36.7525" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr"></div>
+          <div><label class="text-[10px] text-slate-500 block mb-1">خط الطول (Longitude)</label>
+            <input id="restaurantLng" type="number" step="any" value="${settings.restaurant_lng ?? ''}" placeholder="مثال: 3.0420" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr"></div>
+        </div>
+        <div><label class="text-[10px] text-slate-500 block mb-1">نطاق السماح (بالأمتار حول الموقع)</label>
+          <input id="restaurantGpsRadius" type="number" step="1" value="${settings.gps_radius_meters ?? 200}" placeholder="200" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr"></div>
+        ${settings.gps_updated_at ? `<p class="text-[10px] text-slate-500">آخر تحديث: ${new Date(settings.gps_updated_at).toLocaleString('ar-DZ')}</p>` : ''}
+        <div class="flex gap-2">
+          <button id="useMyLocationBtn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold text-xs rounded-lg">📡 استخدام موقعي الحالي</button>
+          <button id="saveGpsBtn" class="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-lg">💾 حفظ الموقع</button>
+        </div>
+      </div>
+      <div class="bg-slate-950 border border-sky-500/30 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-sky-400">🌐 الرابط العام للموقع (لطباعة QR)</h4>
+        <p class="text-[11px] text-slate-400">مهم جداً: هذا الرابط يُستخدم لبناء أكواد QR المطبوعة لكل طاولة. إن مسح زبون بهاتف آخر الكود ولم يعمل، غالباً لأن هذا الحقل فارغ أو يحتوي رابطاً محلياً لا يصل إليه سوى جهازك. ضع هنا الرابط العام النهائي الذي سينشر عليه موقعك فعلياً (مثال: https://mon-resto.com/ أو رابط استضافتك الحالي).</p>
+        <input id="publicBaseUrlInput" placeholder="https://your-domain.com/" value="${settings.public_base_url || ''}" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr">
+        <p class="text-[10px] text-slate-500">الرابط الحالي في متصفحك الآن: <span class="text-slate-400 font-mono break-all">${window.location.origin}${window.location.pathname.replace(/admin\.html$/, '')}</span></p>
+        <div class="flex gap-2">
+          <button id="useCurrentUrlBtn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold text-xs rounded-lg">استخدام رابط متصفحي الحالي</button>
+          <button id="saveBaseUrlBtn" class="flex-1 py-2 bg-sky-600 hover:bg-sky-500 text-slate-950 font-bold text-xs rounded-lg">💾 حفظ الرابط</button>
+        </div>
+      </div>
+      <div class="bg-slate-950 border border-amber-500/30 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-amber-400">🔐 كود دخول الزبون العام (نمط الطابور والحجز الرقمي)</h4>
+        <p class="text-[11px] text-slate-400">هذا هو الكود/رمز QR الذي يدخل به الزبون في صفحة القائمة عندما يكون نمط التشغيل "الطابور والتسكين". اطبعه على ملصق QR في مدخل المطعم، أو أعطِ الزبون الكود يدوياً.</p>
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-3 font-mono text-amber-300 text-xs break-all select-all" dir="ltr">${settings.restaurant_qr_token || '—'}</div>
+        <div class="flex gap-2">
+          <input id="customRestaurantCode" placeholder="أو اكتب كوداً مخصصاً هنا..." class="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr">
+          <button id="saveCustomCodeBtn" class="px-3 py-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg">حفظ</button>
+        </div>
+        <button id="regenRestaurantQrBtn" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-xs rounded-lg">🔄 توليد كود عشوائي جديد</button>
+      </div>
+      <div class="bg-slate-950 border border-sky-500/30 p-5 rounded-2xl space-y-3">
+        <h4 class="font-bold text-sm text-sky-400">🔑 الكود اليدوي العام لدخول الزبون (بدون QR ولا GPS ولا واي فاي)</h4>
+        <p class="text-[11px] text-slate-400">هذا هو الكود الذي يستخدمه الزبون في مربّع "الكود اليدوي" بصفحة القائمة عند اختيار طريقة الدخول "كود يدوي فقط" لنمط الطابور/الحجز الرقمي. لا علاقة له بكود QR أعلاه - أعطِ هذا الكود تحديداً للزبون شفهياً أو مكتوباً.</p>
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-3 font-mono text-sky-300 text-xs break-all select-all" dir="ltr">${settings.customer_manual_code || '—'}</div>
+        <div class="flex gap-2">
+          <input id="customManualCode" placeholder="أو اكتب كوداً مخصصاً هنا..." class="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white font-mono" dir="ltr">
+          <button id="saveManualCodeBtn" class="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-slate-950 font-bold text-xs rounded-lg">حفظ</button>
+        </div>
+        <button id="regenManualCodeBtn" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold text-xs rounded-lg">🔄 توليد كود عشوائي جديد</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---------------- Staff (ربط الدور والقاعة بحسابات Supabase Auth الحقيقية) ----------------
+// ---------------- سجل الطلبات (أرشفة + حذف + تصدير Excel) ----------------
+let historyFilter = 'today'; // today | previous | archived
+let historySelected = new Set();
+
+function isToday(dateStr) {
+  const d = new Date(dateStr), now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
+function getHistoryOrders() {
+  const closed = orders.filter(o => ['COMPLETED','CANCELLED'].includes(o.status));
+  if (historyFilter === 'today') return closed.filter(o => isToday(o.created_at) && !o.is_archived);
+  if (historyFilter === 'previous') return closed.filter(o => !isToday(o.created_at) && !o.is_archived);
+  return closed.filter(o => o.is_archived); // archived
+}
+
+function historyHtml() {
+  const list = getHistoryOrders().sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  const listTotal = list.reduce((s, o) => s + Number(o.total_amount), 0);
+  const filters = [
+    { id: 'today', label: '📅 طلبات اليوم' },
+    { id: 'previous', label: '🗓️ الطلبات السابقة' },
+    { id: 'archived', label: '🗄️ الأرشيف' }
+  ];
+  return `<div class="card p-6 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+      <div>
+        <h3 class="font-bold text-sm text-white">📜 سجل الطلبات (${list.length})</h3>
+        <div class="text-[11px] text-amber-400 font-mono font-bold mt-0.5">💰 إجمالي هذه القائمة: ${formatDA(listTotal)}</div>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button id="exportExcelBtn" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg transition">📥 تحميل Excel</button>
+        ${historyFilter !== 'archived' ? `<button id="archiveSelectedBtn" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white font-bold text-[11px] rounded-lg transition">🗄️ أرشفة المحدد</button>` : ''}
+        <button id="deleteSelectedBtn" class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] rounded-lg transition">🗑️ حذف المحدد</button>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      ${filters.map(f => `<button data-filter="${f.id}" class="history-filter-btn px-3 py-1.5 rounded-xl text-xs font-bold transition ${historyFilter===f.id ? 'bg-amber-600 text-white' : 'bg-slate-900 text-slate-400'}">${f.label}</button>`).join('')}
+    </div>
+    ${list.length ? `<label class="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer w-fit">
+      <input type="checkbox" id="historySelectAll" class="w-4 h-4">
+      <span>تحديد الكل (${list.length})</span>
+    </label>` : ''}
+    <div class="space-y-2 max-h-[32rem] overflow-y-auto">
+      ${list.length ? list.map(o => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs hover:border-amber-500/30 transition">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" data-id="${o.id}" class="history-select w-4 h-4" ${historySelected.has(o.id) ? 'checked' : ''}>
+            <div class="flex-1 flex flex-wrap justify-between gap-2">
+              <span class="font-bold text-white">طلب #${o.order_number} ${o.table_number ? `- طاولة #${o.table_number}` : ''}</span>
+              <span class="text-slate-400">${new Date(o.created_at).toLocaleString('ar-DZ')}</span>
+              <span class="px-2 py-0.5 rounded font-bold ${o.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${o.status === 'COMPLETED' ? 'مكتمل' : 'ملغى'}</span>
+              <span class="text-amber-400 font-mono">${formatDA(o.total_amount)}</span>
+            </div>
+            <button data-toggle="${o.id}" class="history-toggle-btn px-2 py-1 bg-slate-800 text-slate-300 rounded-lg text-[10px] font-bold" onclick="event.preventDefault(); event.stopPropagation();">تفاصيل ▾</button>
+          </label>
+          <div id="history-details-${o.id}" class="hidden mt-2.5 pt-2.5 border-t border-slate-800 space-y-1.5">
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+              <span>💳 الدفع: ${o.payment_status === 'PAID' ? 'مدفوع' : 'غير مدفوع'}${o.payment_method ? ` (${o.payment_method === 'CASH' ? 'نقداً' : o.payment_method})` : ''}</span>
+              ${o.customer_name ? `<span>👤 ${o.customer_name}</span>` : ''}
+              ${o.is_archived ? `<span>🗄️ مؤرشف بتاريخ ${o.archived_at ? new Date(o.archived_at).toLocaleDateString('ar-DZ') : ''}</span>` : ''}
+            </div>
+            <div class="space-y-1">
+              ${(o.items || []).map(i => `<div class="flex justify-between items-center bg-slate-900/70 px-2 py-1 rounded-lg">
+                <span class="text-slate-200">${i.quantity}x ${i.name}${i.notes ? ` <span class="text-amber-300 text-[9px]">(${i.notes})</span>` : ''}</span>
+                <span class="text-slate-400 font-mono">${formatDA((Number(i.price)||0) * (Number(i.quantity)||0))}</span>
+              </div>`).join('') || `<div class="text-slate-500 italic">لا توجد أصناف مسجَّلة</div>`}
+            </div>
+          </div>
+        </div>`).join('') : `<div class="text-center py-10 text-slate-500 text-xs">لا توجد طلبات في هذا القسم</div>`}
+    </div>
+  </div>`;
+}
+
+function exportHistoryToExcel() {
+  const list = getHistoryOrders();
+  if (!list.length) { showToast('لا توجد طلبات لتصديرها في هذا القسم', 'error'); return; }
+  const rows = list.map(o => ({
+    'رقم الطلب': o.order_number, 'الطاولة': o.table_number || '-', 'الحالة': o.status === 'COMPLETED' ? 'مكتمل' : 'ملغى',
+    'حالة الدفع': o.payment_status, 'طريقة الدفع': o.payment_method || '-', 'المبلغ (د.ج)': o.total_amount,
+    'عدد الأصناف': (o.items || []).length, 'التاريخ والوقت': new Date(o.created_at).toLocaleString('ar-DZ')
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'الطلبات');
+  const fname = `طلبات-${historyFilter === 'today' ? 'اليوم' : historyFilter === 'previous' ? 'سابقة' : 'الأرشيف'}-${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
+async function archiveSelected() {
+  if (!historySelected.size) { showToast('اختر طلباً واحداً على الأقل', 'error'); return; }
+  for (const id of historySelected) await updateRow('orders', 'id', id, { is_archived: true, archived_at: new Date().toISOString() });
+  await addAuditLog('ORDERS_ARCHIVED', 'ADMIN', `أرشفة ${historySelected.size} طلب`);
+  showToast('تمت الأرشفة بنجاح', 'success');
+  historySelected.clear();
+  loadAll();
+}
+
+async function deleteSelectedHistory() {
+  if (!historySelected.size) { showToast('اختر طلباً واحداً على الأقل', 'error'); return; }
+  if (!confirm(`حذف ${historySelected.size} طلب نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`)) return;
+  for (const id of historySelected) await deleteRow('orders', 'id', id);
+  await addAuditLog('ORDERS_DELETED', 'ADMIN', `حذف ${historySelected.size} طلب نهائياً`);
+  showToast('تم الحذف بنجاح', 'success');
+  historySelected.clear();
+  loadAll();
+}
+
+function staffHtml() {
+  const roleOptions = ['ADMIN','MANAGER','CASHIER','KITCHEN','MONITOR','HALL_TV'];
+  return `<div class="card p-6 space-y-4">
+    <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">👤 إدارة أدوار الموظفين</h3>
+    <div class="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-indigo-300 text-[11px] leading-relaxed">
+      لإضافة موظف جديد: أنشئ حسابه أولاً (بريد + كلمة مرور) من <b>Supabase Dashboard → Authentication → Users</b>، وسيظهر تلقائياً هنا بعد أول محاولة دخول له، حدد له دوره وقاعته من هذه القائمة.
+    </div>
+    <div class="space-y-3">
+      ${profiles.length ? profiles.map(p => `
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 grid md:grid-cols-5 gap-3 items-center text-xs">
+          <div><div class="font-bold text-white">${p.full_name || '(بدون اسم)'}</div><div class="text-[10px] text-slate-500 font-mono break-all">${p.id}</div></div>
+          <select data-id="${p.id}" class="role-select bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-white">
+            <option value="">— بلا دور —</option>
+            ${roleOptions.map(r => `<option value="${r}" ${p.role===r?'selected':''}>${STAFF_ROLE_LABELS[r]}</option>`).join('')}
+          </select>
+          <select data-id="${p.id}" class="hall-select bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-white">
+            <option value="">⚠️ بدون صلاحية على أي قاعة</option>
+            ${halls.map(h => `<option value="${h.id}" ${(p.assigned_hall_ids||[]).includes(h.id) ? 'selected' : ''}>${h.name}</option>`).join('')}
+          </select>
+          <label class="flex items-center gap-1.5 text-slate-300"><input type="checkbox" data-id="${p.id}" class="active-toggle w-4 h-4" ${p.is_active ? 'checked':''}> مفعّل</label>
+          <button data-id="${p.id}" class="save-profile-btn py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-lg">💾 حفظ</button>
+          ${trustedDevicesCellHtml(p)}
+        </div>`).join('') : `<div class="text-center py-8 text-slate-500 text-xs">لا يوجد أي موظف سجّل دخول بعد. أنشئ حساباً من Supabase أولاً.</div>`}
+    </div>
+  </div>`;
+}
+
+// أجهزة "تذكرني" الموثوقة لكل موظف (دخول سريع على أجهزة المطعم) - عرض وإلغاء
+function trustedDevicesCellHtml(p) {
+  const devices = trustedDevices.filter(d => d.user_id === p.id);
+  if (!devices.length) return `<div class="md:col-span-5 text-[10px] text-slate-600">🖥️ لا توجد أجهزة "تذكرني" موثوقة لهذا الموظف</div>`;
+  return `<div class="md:col-span-5 flex flex-wrap gap-2 pt-1 border-t border-slate-800/60">
+    ${devices.map(d => `
+      <span class="inline-flex items-center gap-1.5 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-300">
+        🖥️ ${d.device_label || 'جهاز غير مسمّى'}
+        <button data-id="${d.id}" class="revoke-device-btn text-rose-400 font-bold">✕ إلغاء</button>
+      </span>`).join('')}
+  </div>`;
+}
+
+async function revokeTrustedDevice(deviceRowId) {
+  const ok = await deleteRow('trusted_devices', 'id', deviceRowId);
+  if (!ok) return;
+  await addAuditLog('TRUSTED_DEVICE_REVOKED', 'ADMIN', `إلغاء ثقة جهاز محفوظ (تذكرني) رقم ${deviceRowId}`);
+  showToast('تم إلغاء هذا الجهاز، لن يُعامل بعد الآن كجهاز موثوق لتسجيل الدخول السريع', 'success');
+  loadAll();
+}
+
+async function saveProfile(userId) {
+  const row = document.querySelector(`.role-select[data-id="${userId}"]`).closest('.grid');
+  const role = row.querySelector('.role-select').value || null;
+  const hallId = row.querySelector('.hall-select').value || null;
+  const isActive = row.querySelector('.active-toggle').checked;
+  await updateRow('profiles', 'id', userId, { role, assigned_hall_id: hallId, assigned_hall_ids: hallId ? [hallId] : [], is_active: isActive });
+  await addAuditLog('STAFF_ROLE_UPDATED', 'ADMIN', `تحديث دور/قاعة الموظف ${userId}`);
+  showToast('تم حفظ بيانات الموظف', 'success');
+  loadAll();
+}
+
+async function updateSettings(patch) {
+  await supabaseClient.from('settings').update(patch).eq('id', 1);
+  await addAuditLog('SETTINGS_UPDATED', 'ADMIN', `تحديث الإعدادات: ${JSON.stringify(patch)}`);
+  showToast('تم حفظ الإعدادات', 'success');
+  loadAll();
+}
+
+// ---------------- QR Logs ----------------
+function qrLogsHtml() {
+  return `<div class="card p-6 space-y-4">
+    <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+      <h3 class="font-bold text-sm text-white">🔒 سجل محاولات مسح QR الأمني</h3>
+      <span class="px-3 py-1 bg-amber-500/20 text-amber-400 font-mono text-xs font-bold rounded-xl">${qrLogs.length} سجل</span>
+    </div>
+    <div class="space-y-2 max-h-[500px] overflow-y-auto">
+      ${qrLogs.length ? qrLogs.map(l => `
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-mono font-bold text-amber-400">طاولة #${l.table_number ?? '-'}</span>
+            <span class="px-2 py-0.5 rounded font-mono font-bold text-[10px] ${['SUCCESS','SESSION_CREATED'].includes(l.result) ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">[${l.result}]</span>
+            <span class="text-slate-400 font-mono text-[11px]">${new Date(l.timestamp).toLocaleTimeString('ar-DZ')}</span>
+          </div>
+          <div class="text-slate-200">${l.details ?? ''}</div>
+        </div>`).join('') : `<div class="text-center py-12 text-slate-500 text-xs">لا توجد محاولات مسجلة بعد</div>`}
+    </div>
+  </div>`;
+}
+
+function attachTabEvents() {
+  document.querySelectorAll('.regen-qr-btn').forEach(b => b.onclick = () => regenerateTableQR(b.dataset.id));
+  document.querySelectorAll('.print-qr-btn').forEach(b => b.onclick = () => openQrPrintModal(+b.dataset.number, b.dataset.token));
+  document.querySelectorAll('.regen-code-btn').forEach(b => b.onclick = () => regenerateTableManualCode(b.dataset.id));
+  document.querySelectorAll('.table-status-btn').forEach(b => b.onclick = () => changeTableStatus(b.dataset.id, b.dataset.status));
+  document.querySelectorAll('.delete-table-btn').forEach(b => b.onclick = () => deleteTable(b.dataset.id, b.dataset.number));
+  const newHallBtn = document.getElementById('newHallBtn'); if (newHallBtn) newHallBtn.onclick = () => { hallFormMode = 'new'; renderTab(); };
+  const saveHallBtn = document.getElementById('saveHallBtn'); if (saveHallBtn) saveHallBtn.onclick = createHall;
+  const cancelHallBtn = document.getElementById('cancelHallBtn'); if (cancelHallBtn) cancelHallBtn.onclick = () => { hallFormMode = null; renderTab(); };
+  document.querySelectorAll('.add-table-btn').forEach(b => b.onclick = () => { addTableForHallId = b.dataset.id; hallPasswordFormId = null; renderTab(); });
+  document.querySelectorAll('.save-table-btn').forEach(b => b.onclick = () => addTableToHall(b.dataset.id));
+  const cancelTableBtn = document.getElementById('cancelTableBtn'); if (cancelTableBtn) cancelTableBtn.onclick = () => { addTableForHallId = null; renderTab(); };
+  document.querySelectorAll('.hall-pwd-btn').forEach(b => b.onclick = () => { hallPasswordFormId = b.dataset.id; addTableForHallId = null; renderTab(); });
+  document.querySelectorAll('.save-hall-pwd-btn').forEach(b => b.onclick = () => saveHallPassword(b.dataset.id));
+  const cancelHallPwdBtn = document.getElementById('cancelHallPwdBtn'); if (cancelHallPwdBtn) cancelHallPwdBtn.onclick = () => { hallPasswordFormId = null; renderTab(); };
+  document.querySelectorAll('.regen-hall-qr-btn').forEach(b => b.onclick = () => regenerateHallQR(b.dataset.id));
+  document.querySelectorAll('.delete-hall-btn').forEach(b => b.onclick = () => deleteHall(b.dataset.id, +b.dataset.count));
+  document.querySelectorAll('.edit-item-btn').forEach(b => b.onclick = () => { editingItemId = b.dataset.id; dishFormMode = null; renderTab(); });
+  document.querySelectorAll('.edit-dish-btn').forEach(b => b.onclick = () => { dishFormMode = 'edit'; dishEditingId = b.dataset.id; editingItemId = null; renderTab(); });
+  document.querySelectorAll('.toggle-avail-btn').forEach(b => b.onclick = () => toggleAvailability(b.dataset.id, b.dataset.avail === 'true'));
+  document.querySelectorAll('.remove-addon-btn').forEach(b => b.onclick = () => removeAddon(b.dataset.item, b.dataset.addon));
+  document.querySelectorAll('.delete-dish-btn').forEach(b => b.onclick = () => deleteDish(b.dataset.id, b.dataset.name));
+  document.querySelectorAll('.delete-category-btn').forEach(b => b.onclick = () => deleteCategory(b.dataset.id, b.dataset.key, b.dataset.label));
+  const addCategoryBtn = document.getElementById('addCategoryBtn'); if (addCategoryBtn) addCategoryBtn.onclick = addCategory;
+  const addBtn = document.getElementById('addAddonBtn'); if (addBtn) addBtn.onclick = () => addAddon(editingItemId);
+  const newDishBtn = document.getElementById('newDishBtn'); if (newDishBtn) newDishBtn.onclick = () => { dishFormMode = 'new'; dishEditingId = null; editingItemId = null; renderTab(); };
+  const saveDishBtn = document.getElementById('saveDishBtn'); if (saveDishBtn) saveDishBtn.onclick = saveDish;
+  const cancelDishBtn = document.getElementById('cancelDishBtn'); if (cancelDishBtn) cancelDishBtn.onclick = () => { dishFormMode = null; dishEditingId = null; renderTab(); };
+  const dishImageFile = document.getElementById('dishImageFile');
+  if (dishImageFile) dishImageFile.onchange = () => {
+    const file = dishImageFile.files[0];
+    const preview = document.getElementById('dishImagePreview');
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => { preview.src = e.target.result; preview.classList.remove('hidden'); };
+    reader.readAsDataURL(file);
+  };
+  document.querySelectorAll('.mode-btn').forEach(b => b.onclick = () => {
+    const patch = { operating_mode: b.dataset.mode };
+    updateSettings(patch);
+  });
+  document.querySelectorAll('.policy-btn').forEach(b => b.onclick = () => updateSettings({ payment_policy: b.dataset.policy }));
+  const saveTimeout = document.getElementById('saveTimeoutBtn');
+  if (saveTimeout) saveTimeout.onclick = () => updateSettings({ session_timeout_minutes: +document.getElementById('sessionTimeoutInput').value });
+  const saveSecChecks = document.getElementById('saveSecurityChecksBtn');
+  if (saveSecChecks) saveSecChecks.onclick = () => updateSettings({
+    enable_gps_check: document.getElementById('gpsCheckToggle').checked,
+    enable_wifi_check: document.getElementById('wifiCheckToggle').checked
+  });
+  const useMyLocationBtn = document.getElementById('useMyLocationBtn');
+  if (useMyLocationBtn) useMyLocationBtn.onclick = () => {
+    if (!navigator.geolocation) { showToast('المتصفح لا يدعم تحديد الموقع', 'error'); return; }
+    useMyLocationBtn.textContent = '📡 جارٍ تحديد موقعك...';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        document.getElementById('restaurantLat').value = pos.coords.latitude;
+        document.getElementById('restaurantLng').value = pos.coords.longitude;
+        useMyLocationBtn.textContent = '📡 استخدام موقعي الحالي';
+        showToast('تم تحديد موقعك - اضغط "حفظ الموقع" لتثبيته', 'success');
+      },
+      (err) => {
+        useMyLocationBtn.textContent = '📡 استخدام موقعي الحالي';
+        showToast('تعذر تحديد موقعك: ' + (err.message || 'تأكد من إذن الموقع في المتصفح'), 'error');
+      }
+    );
+  };
+  const saveGpsBtn = document.getElementById('saveGpsBtn');
+  if (saveGpsBtn) saveGpsBtn.onclick = () => {
+    const lat = +document.getElementById('restaurantLat').value;
+    const lng = +document.getElementById('restaurantLng').value;
+    const radius = +document.getElementById('restaurantGpsRadius').value || 200;
+    if (!lat || !lng) { showToast('أدخل خط العرض وخط الطول، أو استخدم زر "موقعي الحالي"', 'error'); return; }
+    updateSettings({ restaurant_lat: lat, restaurant_lng: lng, gps_radius_meters: radius, gps_updated_at: new Date().toISOString() });
+  };
+  const useCurrentUrlBtn = document.getElementById('useCurrentUrlBtn');
+  if (useCurrentUrlBtn) useCurrentUrlBtn.onclick = () => {
+    document.getElementById('publicBaseUrlInput').value = `${window.location.origin}${window.location.pathname.replace(/admin\.html$/, '')}`;
+  };
+  const saveBaseUrlBtn = document.getElementById('saveBaseUrlBtn');
+  if (saveBaseUrlBtn) saveBaseUrlBtn.onclick = () => {
+    let val = document.getElementById('publicBaseUrlInput').value.trim();
+    if (!val) { showToast('أدخل الرابط العام أولاً', 'error'); return; }
+    if (!/^https?:\/\//i.test(val)) { showToast('الرابط يجب أن يبدأ بـ http:// أو https://', 'error'); return; }
+    if (!val.endsWith('/')) val += '/';
+    updateSettings({ public_base_url: val });
+  };
+  const saveCustomCodeBtn = document.getElementById('saveCustomCodeBtn');
+  if (saveCustomCodeBtn) saveCustomCodeBtn.onclick = () => {
+    const val = document.getElementById('customRestaurantCode').value.trim();
+    if (!val) { showToast('أدخل كوداً أولاً', 'error'); return; }
+    updateSettings({ restaurant_qr_token: val });
+  };
+  const regenRestaurantQrBtn = document.getElementById('regenRestaurantQrBtn');
+  if (regenRestaurantQrBtn) regenRestaurantQrBtn.onclick = () => {
+    const newToken = `QR-RESTAURANT-${Math.random().toString(36).substring(2, 22).toUpperCase()}`;
+    updateSettings({ restaurant_qr_token: newToken });
+  };
+  const saveManualCodeBtn = document.getElementById('saveManualCodeBtn');
+  if (saveManualCodeBtn) saveManualCodeBtn.onclick = () => {
+    const val = document.getElementById('customManualCode').value.trim();
+    if (!val) { showToast('أدخل كوداً أولاً', 'error'); return; }
+    updateSettings({ customer_manual_code: val, customer_manual_code_updated_at: new Date().toISOString() });
+  };
+  const regenManualCodeBtn = document.getElementById('regenManualCodeBtn');
+  if (regenManualCodeBtn) regenManualCodeBtn.onclick = () => {
+    const newCode = `CODE-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    updateSettings({ customer_manual_code: newCode, customer_manual_code_updated_at: new Date().toISOString() });
+  };
+  document.querySelectorAll('.save-profile-btn').forEach(b => b.onclick = () => saveProfile(b.dataset.id));
+  document.querySelectorAll('.revoke-device-btn').forEach(b => b.onclick = () => revokeTrustedDevice(b.dataset.id));
+  document.querySelectorAll('.history-filter-btn').forEach(b => b.onclick = () => { historyFilter = b.dataset.filter; historySelected.clear(); renderTab(); });
+  document.querySelectorAll('.history-select').forEach(b => b.onchange = () => { if (b.checked) historySelected.add(b.dataset.id); else historySelected.delete(b.dataset.id); });
+  const selectAllBox = document.getElementById('historySelectAll');
+  if (selectAllBox) selectAllBox.onchange = () => {
+    document.querySelectorAll('.history-select').forEach(b => { b.checked = selectAllBox.checked; if (selectAllBox.checked) historySelected.add(b.dataset.id); else historySelected.delete(b.dataset.id); });
+  };
+  document.querySelectorAll('.history-toggle-btn').forEach(b => b.onclick = () => {
+    const panel = document.getElementById(`history-details-${b.dataset.toggle}`);
+    const open = !panel.classList.contains('hidden');
+    panel.classList.toggle('hidden');
+    b.textContent = open ? 'تفاصيل ▾' : 'إخفاء ▴';
+  });
+  const exportBtn = document.getElementById('exportExcelBtn'); if (exportBtn) exportBtn.onclick = exportHistoryToExcel;
+  const archiveBtn = document.getElementById('archiveSelectedBtn'); if (archiveBtn) archiveBtn.onclick = archiveSelected;
+  const deleteHistBtn = document.getElementById('deleteSelectedBtn'); if (deleteHistBtn) deleteHistBtn.onclick = deleteSelectedHistory;
+}
+
+async function loadAll() {
+  tables = await fetchAll('tables', 'number');
+  menuItems = await fetchAll('menu_items', 'category');
+  categories = await fetchAll('categories', 'sort_order');
+  orders = await fetchAllPaginated('orders', 'created_at');
+  qrLogs = await fetchAll('qr_access_logs', 'timestamp', false);
+  profiles = await fetchAll('profiles', 'created_at');
+  halls = await fetchAll('halls', 'name');
+  trustedDevices = await fetchAll('trusted_devices', 'created_at', false);
+  const { data: s } = await supabaseClient.from('settings').select('*').eq('id', 1).single();
+  settings = s;
+  renderStats();
+  renderTab();
+}
+loadAll();
+subscribeToTable('orders', renderStats);
+subscribeToTable('tables', loadAll);
+
+document.getElementById('qrPrintCloseBtn').onclick = () => { document.getElementById('qrPrintModal').style.display = 'none'; };
+document.getElementById('qrPrintNowBtn').onclick = () => window.print();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>المحاسبة</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="css/style.css">
+<style>
+@media print {
+  body * { visibility: hidden; }
+  #printableInvoice, #printableInvoice * { visibility: visible; color: #000 !important; background: #fff !important; border-color: #000 !important; }
+  #printableInvoice { position: fixed; top: 0; left: 0; width: 100%; padding: 20px; }
+}
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen pb-20">
+
+<main class="max-w-7xl mx-auto p-4 lg:p-8 space-y-6">
+
+  <div class="card p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div>
+      <span class="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-md border border-emerald-500/30">شاشة المحاسب</span>
+      <h2 class="text-xl font-bold text-white flex items-center gap-2 mt-1.5">🧾للقابض</h2>
+      <p class="text-xs text-slate-400 mt-1">       </p>
+    </div>
+    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 text-left">
+      <div class="text-[10px] text-slate-400">إجمالي غير محصل:</div>
+      <div id="unpaidTotal" class="text-lg font-bold text-amber-400 font-mono">0 د.ج</div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <div class="lg:col-span-5 card p-4 space-y-3">
+      <h3 class="font-bold text-sm text-white border-b border-slate-800 pb-3">🕐 الطلبات الجارية للمحاسبة (<span id="pendingCount">0</span>)</h3>
+      <div id="ordersList" class="space-y-2 max-h-[560px] overflow-y-auto pr-1"></div>
+    </div>
+
+    <div class="lg:col-span-7 card p-6 space-y-6" id="invoiceBox">
+      <div class="text-center py-20 text-slate-500 text-xs">حدد طلباً من القائمة الجانبية</div>
+    </div>
+  </div>
+</main>
+
+<script src="js/config.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/state-machine.js"></script>
+<script src="js/qr-engine.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/auth-gate.js"></script>
+<script>
+requireStaffAuth('CASHIER', () => {
+renderNav('cashier.html');
+renderFooter();
+
+let orders = [], tables = [], selectedOrderId = null, paymentMethod = 'CASH';
+
+async function loadData() {
+  const all = await fetchAll('orders', 'created_at');
+  orders = all.filter(o => o.status !== 'COMPLETED' && o.status !== 'CANCELLED');
+  tables = await fetchAll('tables');
+  renderList();
+  renderInvoice();
+}
+
+function renderList() {
+  document.getElementById('pendingCount').textContent = orders.length;
+  document.getElementById('unpaidTotal').textContent = formatDA(orders.filter(o => o.payment_status !== 'PAID').reduce((s, o) => s + Number(o.total_amount), 0));
+  const list = document.getElementById('ordersList');
+  if (!orders.length) { list.innerHTML = `<div class="text-center py-12 text-slate-500 text-xs">جميع الفواتير محصلة ومغلقة</div>`; return; }
+  if (!selectedOrderId) selectedOrderId = orders[0].id;
+  list.innerHTML = orders.map(o => {
+    const idleMin = Math.floor((Date.now() - new Date(o.created_at).getTime()) / 60000);
+    const canCancel = o.payment_status !== 'PAID';
+    return `
+    <div data-id="${o.id}" class="order-row p-3.5 rounded-xl border cursor-pointer transition space-y-2 ${selectedOrderId === o.id ? 'bg-emerald-950/40 border-emerald-500 text-white shadow-lg' : 'bg-slate-950 border-slate-800 text-slate-300'}">
+      <div class="flex justify-between items-center"><span class="font-bold text-sm">طلب #${o.order_number}</span><span class="font-extrabold font-mono text-emerald-400 text-xs">${formatDA(o.total_amount)}</span></div>
+      <div class="flex justify-between items-center text-[11px] text-slate-400">
+        <span>${o.table_number ? `طاولة #${o.table_number}` : 'بدون طاولة بعد'} ${o.payment_status === 'PAID' ? '💳 مدفوع' : ''}</span>
+        <span class="px-2 py-0.5 bg-slate-800 text-amber-300 font-mono rounded font-bold">${o.status}</span>
+      </div>
+      <div class="flex justify-between items-center text-[10px] text-slate-500">
+        <span>منذ ${idleMin} د</span>
+        <span class="flex gap-1.5">
+          ${canCancel ? `<button data-cancel="${o.id}" class="cancel-order-btn px-2 py-1 bg-amber-600/80 hover:bg-amber-500 text-slate-950 font-bold rounded-lg">✖ إلغاء</button>` : ''}
+          <button data-del="${o.id}" class="delete-order-btn px-2 py-1 bg-rose-700/80 hover:bg-rose-600 text-white font-bold rounded-lg">🗑️ حذف نهائي</button>
+        </span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('ordersList').addEventListener('click', (e) => {
+  const cancelBtn = e.target.closest('.cancel-order-btn');
+  if (cancelBtn) { e.stopPropagation(); cancelOrder(orders.find(o => o.id === cancelBtn.dataset.cancel)); return; }
+  const delBtn = e.target.closest('.delete-order-btn');
+  if (delBtn) { e.stopPropagation(); deleteOrderForever(orders.find(o => o.id === delBtn.dataset.del)); return; }
+  const row = e.target.closest('.order-row');
+  if (!row) return;
+  selectedOrderId = row.dataset.id;
+  renderList(); renderInvoice();
+});
+
+// تحرير الطاولة + التذكرة المرتبطة بأي طلب شاغر/ملغى
+// ⚠️ الطاولة لا تعود "AVAILABLE" مباشرة من هنا: تُسلَّم للمراقب كـ"قيد التنظيف" وهو من يقرر جاهزيتها (نفس منطق إتمام الدفع تماماً)
+async function releaseOrderResources(order) {
+  const table = tables.find(t => t.number === order.table_number);
+  if (table && table.status !== 'AVAILABLE') {
+    try { validateTableTransition(table.status, 'DIRTY_CLEANING'); } catch (e) {}
+    await updateRow('tables', 'id', table.id, {
+      status: 'DIRTY_CLEANING', current_order_id: null, current_session_id: null
+    });
+    await supabaseClient.from('table_sessions').update({ status: 'EXPIRED', ended_at: new Date().toISOString() })
+      .eq('table_number', table.number).eq('status', 'ACTIVE');
+  }
+  await supabaseClient.from('queue_tickets').update({ status: 'CANCELLED', assigned_table_number: null })
+    .eq('associated_order_id', order.id).in('status', ['WAITING', 'CONFIRMED_ARRIVED', 'CALLED', 'SKIPPED']);
+}
+
+// إلغاء طلب شاغر (يبقى في السجل لكنه يخرج من شاشة الكاشير، وتنتقل طاولته لمراجعة المراقب)
+async function cancelOrder(order) {
+  if (!order) return;
+  if (!confirm(`إلغاء الطلب #${order.order_number}؟ ستنتقل طاولته لمراجعة المراقب قبل أن تصبح متاحة من جديد.`)) return;
+  await updateRow('orders', 'id', order.id, { status: 'CANCELLED', updated_at: new Date().toISOString() });
+  await releaseOrderResources(order);
+  await addAuditLog('ORDER_CANCELLED', 'CASHIER', `إلغاء الطلب الشاغر #${order.order_number}`);
+  showToast(`تم إلغاء الطلب #${order.order_number} - الطاولة بانتظار تأكيد المراقب`, 'success');
+  if (selectedOrderId === order.id) selectedOrderId = null;
+  loadData();
+}
+
+// حذف نهائي للطلب من قاعدة البيانات (لمنع تكرار الأرقام العالقة لأيام)
+async function deleteOrderForever(order) {
+  if (!order) return;
+  if (!confirm(`حذف الطلب #${order.order_number} نهائياً من قاعدة البيانات؟ لا يمكن التراجع.`)) return;
+  await releaseOrderResources(order);
+  await supabaseClient.from('queue_tickets').delete().eq('associated_order_id', order.id);
+  const ok = await deleteRow('orders', 'id', order.id);
+  if (!ok) return;
+  await addAuditLog('ORDER_DELETED', 'CASHIER', `حذف نهائي للطلب #${order.order_number}`);
+  showToast(`تم حذف الطلب #${order.order_number} نهائياً`, 'success');
+  if (selectedOrderId === order.id) selectedOrderId = null;
+  loadData();
+}
+
+
+function renderInvoice() {
+  const order = orders.find(o => o.id === selectedOrderId);
+  const box = document.getElementById('invoiceBox');
+  if (!order) { box.innerHTML = `<div class="text-center py-20 text-slate-500 text-xs">حدد طلباً من القائمة الجانبية</div>`; return; }
+
+  const needsPrepay = order.status === 'SUBMITTED' && order.payment_status !== 'PAID';
+  const isServedAndUnpaid = order.status === 'DELIVERED_TO_TABLE' && order.payment_status !== 'PAID';
+  const isServedAndPaid = order.status === 'DELIVERED_TO_TABLE' && order.payment_status === 'PAID';
+  // حالة استدراكية: طلب تجاوز مرحلة "SUBMITTED" (وصل للمطبخ/قيد التحضير..) وهو غير مدفوع -
+  // يحدث هذا لطلبات قديمة/عالقة من قبل الإصلاحات الأخيرة. يجب أن يبقى بإمكان القابض تحصيل ثمنها دائماً.
+  const needsCatchupPayment = !needsPrepay && !isServedAndUnpaid && !isServedAndPaid
+    && order.payment_status !== 'PAID' && order.status !== 'DRAFT' && order.status !== 'CANCELLED';
+  const showPaymentForm = needsPrepay || isServedAndUnpaid || needsCatchupPayment;
+
+  if (paymentMethod !== 'CASH') paymentMethod = 'CASH'; // نسخة الطلب من الطاولة: كاش بالدينار الجزائري فقط
+  const availableMethods = [{ id: 'CASH', label: 'نقداً (دينار جزائري)', icon: '💵' }];
+
+  box.innerHTML = `
+    ${needsPrepay ? `<div class="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-indigo-300 text-xs font-bold text-center">💳 دفع قبل التحضير حسب سياسة المطعم الحالية</div>` : ''}
+    ${needsCatchupPayment ? `<div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs font-bold text-center">⚠️ طلب غير مدفوع تجاوز مرحلة الإرسال (حالته الحالية: ${order.status}) - حصّل ثمنه الآن دون التأثير على مساره في المطبخ</div>` : ''}
+    ${isServedAndPaid ? `<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold text-center">✅ هذا الطلب مدفوع مسبقاً - فقط أغلق الفاتورة</div>` : ''}
+    <div id="printableInvoice" class="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-4 font-mono">
+      <div class="text-center border-b border-slate-800 pb-3 space-y-1">
+        <h4 class="font-bold text-white text-base" style="font-family:'Tajawal'">المطعم</h4>
+        <div class="text-[11px] text-slate-400">......</div>
+        <div class="text-xs text-amber-400 font-bold">فاتورة طلب #${order.order_number} ${order.table_number ? `| طاولة #${order.table_number}` : ''}</div>
+        <div class="text-[10px] text-slate-500">${new Date().toLocaleString('ar-DZ')}</div>
+      </div>
+      <div class="space-y-2 text-xs">
+        ${order.items.map(i => `<div class="flex justify-between text-slate-300"><span>${i.quantity}x ${i.name}</span><span>${formatDA(i.price * i.quantity)}</span></div>`).join('')}
+      </div>
+      <div class="border-t border-slate-800 pt-3 flex justify-between items-center font-bold text-sm">
+        <span class="text-white">المجموع الإجمالي النهائي:</span>
+        <span class="text-emerald-400 text-base">${formatDA(order.total_amount)}</span>
+      </div>
+      <div class="text-center text-[10px] text-slate-500 pt-2">الدفع: نقداً (دينار جزائري) | شكراً لزيارتكم 🙏</div>
+    </div>
+    <button id="printInvoiceBtn" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-xs rounded-xl transition">🖨️ طباعة الفاتورة</button>
+
+    <div class="space-y-4">
+      ${showPaymentForm ? `
+      <h4 class="font-bold text-xs text-white">تحصيل الدفعة نقداً بالدينار الجزائري:</h4>
+      <div class="grid grid-cols-1 gap-3" id="paymentMethods">
+        ${availableMethods.map(m => `
+          <button data-m="${m.id}" class="pm-btn p-3 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1.5 ${paymentMethod===m.id ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-slate-950 text-slate-400 border-slate-800'}">
+            <span class="text-lg">${m.icon}</span><span>${m.label}</span>
+          </button>`).join('')}
+      </div>
+      <div id="cashBox" class="${paymentMethod==='CASH' ? '' : 'hidden'} grid grid-cols-2 gap-3 bg-slate-950 p-3 rounded-xl border border-slate-800">
+        <div><label class="text-[11px] text-slate-400 block mb-1">المبلغ المقبوض من الزبون:</label>
+          <input id="cashGiven" type="number" placeholder="أدخل المبلغ..." class="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white font-mono"></div>
+        <div><label id="cashCalcLabel" class="text-[11px] text-slate-400 block mb-1">الباقي المرتجع للزبون:</label>
+          <div id="cashCalcValue" class="text-sm font-extrabold text-amber-400 font-mono py-1.5">0 د.ج</div></div>
+      </div>
+      <button id="payBtn" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm rounded-xl transition">
+        ${needsPrepay ? '💳 تأكيد الدفع' : needsCatchupPayment ? '💳 تحصيل الدفعة المتأخرة' : '✅ تأكيد الدفع وإغلاق الفاتورة'}
+      </button>` : isServedAndPaid ? `
+      <button id="payBtn" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm rounded-xl transition">✅ إغلاق الفاتورة</button>` : `
+      <div class="p-3 bg-slate-800/60 border border-slate-700 rounded-xl text-slate-300 text-xs font-bold text-center">
+        ⏳ لا يوجد إجراء دفع مطلوب الآن - الطلب في حالة "${order.status}"${order.payment_status === 'PAID' ? ' (مدفوع مسبقاً)' : ''}. سيعود للكاشير تلقائياً عند تسليمه للطاولة.
+      </div>`}
+    </div>
+  `;
+
+  const printBtn = document.getElementById('printInvoiceBtn');
+  if (printBtn) printBtn.onclick = () => window.print();
+  const pmBox = document.getElementById('paymentMethods');
+  if (pmBox) pmBox.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pm-btn'); if (!btn) return;
+    paymentMethod = btn.dataset.m; renderInvoice();
+  });
+
+  // 🆕 حساب حي: إن كان المبلغ المقبوض أقل من الإجمالي، نعرض "المبلغ المتبقي" (لا يزال على الزبون) بالأحمر
+  // ونحوّل الزر لـ"تصحيح المبلغ" (يمنع إغلاق الفاتورة كمدفوعة بالكامل خطأً)؛ وإن كان كافياً نعرض الباقي المرتجع بالأخضر كالمعتاد
+  const cashInput = document.getElementById('cashGiven');
+  function updateCashCalc() {
+    if (!cashInput) return { sufficient: true };
+    const given = +cashInput.value || 0;
+    const total = Number(order.total_amount);
+    const label = document.getElementById('cashCalcLabel');
+    const value = document.getElementById('cashCalcValue');
+    const payBtn = document.getElementById('payBtn');
+    if (given < total) {
+      const remaining = total - given;
+      label.textContent = 'المبلغ المتبقي على الزبون:';
+      value.className = 'text-sm font-extrabold text-rose-400 font-mono py-1.5';
+      value.textContent = formatDA(remaining);
+      if (payBtn) { payBtn.textContent = '✏️ صحّح المبلغ المدخل (غير كافٍ)'; payBtn.classList.add('bg-rose-700','hover:bg-rose-600'); payBtn.classList.remove('bg-emerald-600','hover:bg-emerald-500'); }
+      return { sufficient: false, remaining };
+    } else {
+      const change = given - total;
+      label.textContent = 'الباقي المرتجع للزبون:';
+      value.className = 'text-sm font-extrabold text-amber-400 font-mono py-1.5';
+      value.textContent = formatDA(change);
+      if (payBtn) {
+        payBtn.textContent = needsPrepay ? '💳 تأكيد الدفع' : needsCatchupPayment ? '💳 تحصيل الدفعة المتأخرة' : '✅ تأكيد الدفع وإغلاق الفاتورة';
+        payBtn.classList.remove('bg-rose-700','hover:bg-rose-600'); payBtn.classList.add('bg-emerald-600','hover:bg-emerald-500');
+      }
+      return { sufficient: true, change };
+    }
+  }
+  if (cashInput) { cashInput.addEventListener('input', updateCashCalc); updateCashCalc(); }
+
+  const payBtn = document.getElementById('payBtn');
+  if (payBtn) payBtn.onclick = () => {
+    if (paymentMethod === 'CASH' && cashInput) {
+      const calc = updateCashCalc();
+      if (!calc.sufficient) {
+        showToast(`المبلغ المدخل غير كافٍ - ما زال متبقياً ${formatDA(calc.remaining)} على الزبون`, 'error');
+        cashInput.focus();
+        return;
+      }
+    }
+    completePayment(order, { needsPrepay, isServedAndUnpaid, isServedAndPaid, needsCatchupPayment });
+  };
+}
+
+async function logRevenue(order, method) {
+  // 🆕 سجل إيرادات ثابت ومنفصل عن جدول الطلبات - لا يتأثر أبداً بحذف الطلب لاحقاً من سجل الأرشيف
+  await supabaseClient.from('revenue_log').insert({
+    id: genId('rev'), order_id: order.id, order_number: order.order_number,
+    table_number: order.table_number, amount: Number(order.total_amount),
+    payment_method: method, recorded_by: 'CASHIER'
+  });
+}
+
+async function completePayment(order, flags) {
+  if (flags.needsCatchupPayment) {
+    // لا تغيير على status (الطلب في مساره الصحيح بالمطبخ) - فقط تصحيح حالة الدفع
+    const saved = await updateRow('orders', 'id', order.id, { payment_status: 'PAID', payment_method: paymentMethod, updated_at: new Date().toISOString() });
+    if (!saved || !saved.length) { showToast('❌ فشل تحصيل الدفعة فعلياً في قاعدة البيانات - لم تُحتسب. تأكد من صلاحيات القابض وحاول مجدداً', 'error'); return; }
+    await logRevenue(order, paymentMethod);
+    await addAuditLog('CATCHUP_PAYMENT_COMPLETED', 'CASHIER', `تحصيل دفعة متأخرة للطلب #${order.order_number} بمبلغ ${order.total_amount} د.ج عبر ${paymentMethod}`);
+    showToast(`تم تحصيل الدفعة بنجاح ✅`, 'success');
+    selectedOrderId = null;
+    loadData();
+    return;
+  }
+
+  if (flags.needsPrepay) {
+    try { validateOrderTransition('SUBMITTED', 'PAID', 'CASHIER', order.payment_policy); } catch (err) { showToast(err.message, 'error'); return; }
+    const saved = await updateRow('orders', 'id', order.id, { status: 'PAID', payment_status: 'PAID', payment_method: paymentMethod, updated_at: new Date().toISOString() });
+    if (!saved || !saved.length) { showToast('❌ فشل تأكيد الدفع فعلياً في قاعدة البيانات - لم يُحتسب. تأكد من صلاحيات القابض وحاول مجدداً', 'error'); return; }
+
+    await logRevenue(order, paymentMethod);
+    await addAuditLog('PREPAYMENT_COMPLETED', 'CASHIER', `دفع مسبق للطلب #${order.order_number} بمبلغ ${order.total_amount} د.ج عبر ${paymentMethod}`);
+    showToast(`تم تأكيد الدفع بنجاح ✅`, 'success');
+    selectedOrderId = null;
+    loadData();
+    return;
+  }
+
+  if (flags.isServedAndUnpaid) {
+    try {
+      validateOrderTransition('DELIVERED_TO_TABLE', 'PAYMENT_PENDING', 'CASHIER', order.payment_policy);
+      validateOrderTransition('PAYMENT_PENDING', 'COMPLETED', 'CASHIER', order.payment_policy);
+    } catch (err) { showToast(err.message, 'error'); return; }
+    await closeOrderAndReleaseTable(order, paymentMethod);
+    return;
+  }
+
+  if (flags.isServedAndPaid) {
+    try { validateOrderTransition('DELIVERED_TO_TABLE', 'COMPLETED', 'CASHIER', order.payment_policy); } catch (err) { showToast(err.message, 'error'); return; }
+    await closeOrderAndReleaseTable(order, order.payment_method || paymentMethod);
+    return;
+  }
+
+  showToast('لا يوجد إجراء دفع متاح لهذا الطلب في حالته الحالية', 'error');
+}
+
+async function closeOrderAndReleaseTable(order, method) {
+  const saved = await updateRow('orders', 'id', order.id, { status: 'COMPLETED', payment_status: 'PAID', payment_method: method, updated_at: new Date().toISOString() });
+  if (!saved || !saved.length) { showToast('❌ فشل تحصيل/إغلاق الفاتورة فعلياً في قاعدة البيانات - لم يُحتسب. تأكد من صلاحيات القابض وحاول مجدداً', 'error'); return; }
+  // 🆕 نسجّل الإيراد هنا فقط إن كان الطلب غير مدفوع فعلاً قبل هذه اللحظة (دفع جديد حقيقي) - وإلا فهو
+  // طلب دُفع مسبقاً (مثلاً عبر "الدفع أولاً") ونحن الآن فقط نغلق فاتورته، فلا نُسجّل نفس المبلغ مرتين
+  if (order.payment_status !== 'PAID') await logRevenue(order, method);
+
+  const table = tables.find(t => t.number === order.table_number);
+  if (table) {
+    try { validateTableTransition(table.status, 'DIRTY_CLEANING'); } catch (e) {}
+    await updateRow('tables', 'id', table.id, {
+      status: 'DIRTY_CLEANING', current_order_id: null, current_session_id: null
+    });
+    await supabaseClient.from('table_sessions').update({ status: 'EXPIRED', ended_at: new Date().toISOString() })
+      .eq('table_number', table.number).eq('status', 'ACTIVE');
+  }
+
+  await addAuditLog('PAYMENT_COMPLETED', 'CASHIER', `تحصيل/إغلاق الطلب #${order.order_number} بمبلغ ${order.total_amount} د.ج عبر ${method}`);
+  showToast(`تم إتمام الفاتورة #${order.order_number} بنجاح ✅`, 'success');
+  selectedOrderId = null;
+  loadData();
+}
+
+loadData();
+subscribeToTable('orders', loadData);
+subscribeToNewOrderAlerts(); // 🆕 تنبيه صوتي + مرئي للمحاسب عند كل طلب جديد يصل
+});
+</script>
+</body>
+</html>
